@@ -757,6 +757,12 @@ interface IntegrationDef {
 const INTEGRATIONS: IntegrationDef[] = [
   { id: "integration_stripe", name: "Stripe", color: "#0570DE",
     fields: [{ key: "stripe-api-key", label: N_("Secret key"), placeholder: "sk_live_…", secret: true }] },
+  { id: "integration_paypal", name: "PayPal", color: "#009CDE",
+    fields: [
+      { key: "paypal-client-id", label: N_("Client ID"), placeholder: "...", secret: true },
+      { key: "paypal-client-secret", label: N_("Client secret"), placeholder: "...", secret: true },
+    ],
+    hint: N_("Read-only REST app with reporting balances and transaction search access.") },
   { id: "integration_github", name: "GitHub", color: "#F4505E",
     fields: [{ key: "github-token", label: N_("Token"), placeholder: "ghp_…", secret: true }],
     hint: N_("Classic token with the repo scope, or fine-grained with read access to Pull requests, Commit statuses and Actions.") },
@@ -814,6 +820,12 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
     });
 
     const rows = h("div", { style: "display:flex;flex-direction:column;gap:6px;flex:1 1 auto;min-width:0" });
+    const fieldEntries: {
+      field: { key: string; label: string; placeholder: string; secret: boolean };
+      input: HTMLInputElement;
+      dotEl: HTMLElement;
+    }[] = [];
+
     for (const field of def.fields) {
       const input = h("input", {
         type: field.secret ? "password" : "text",
@@ -824,16 +836,31 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
       }) as HTMLInputElement;
       const saveBtn = h("button", { text: t("Save") });
       const dotEl = statusDot(present[field.key] ?? false);
-      saveBtn.addEventListener("click", async () => {
-        const value = input.value.trim();
-        try {
-          await Bridge.secretSet(field.key, value);
-          present[field.key] = value.length > 0;
-          input.value = "";
-          input.placeholder = value ? CHAT_STRINGS.stored : field.placeholder;
-          dotEl.style.background = value ? "#22c55e" : "#f4505e";
-        } catch {
-          dotEl.style.background = "#f5a524";
+      const entry = { field, input, dotEl };
+      fieldEntries.push(entry);
+
+      const saveIntegrationFields = async () => {
+        const nonEmpty = fieldEntries.filter((e) => e.input.value.trim().length > 0);
+        const targets = nonEmpty.length > 0 ? nonEmpty : [entry];
+        for (const tEntry of targets) {
+          const value = tEntry.input.value.trim();
+          try {
+            await Bridge.secretSet(tEntry.field.key, value);
+            present[tEntry.field.key] = value.length > 0;
+            tEntry.input.value = "";
+            tEntry.input.placeholder = value ? CHAT_STRINGS.stored : tEntry.field.placeholder;
+            tEntry.dotEl.style.background = value ? "#22c55e" : "#f4505e";
+          } catch {
+            tEntry.dotEl.style.background = "#f5a524";
+          }
+        }
+      };
+
+      saveBtn.addEventListener("click", () => void saveIntegrationFields());
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void saveIntegrationFields();
         }
       });
       rows.append(
@@ -907,6 +934,43 @@ function generalSection(): HTMLElement {
     void save();
   });
 
+  const vpsHost = h("input", {
+    type: "text",
+    value: settings.vpsConfig.host,
+    style: "flex:1 1 auto;min-width:0",
+    spellcheck: "false",
+  }) as HTMLInputElement;
+  const vpsUser = h("input", {
+    type: "text",
+    value: settings.vpsConfig.user,
+    style: "width:96px",
+    spellcheck: "false",
+  }) as HTMLInputElement;
+  const vpsPort = h("input", {
+    type: "number",
+    min: "1",
+    max: "65535",
+    value: String(settings.vpsConfig.port || 22),
+    style: "width:76px",
+  }) as HTMLInputElement;
+  const vpsKey = h("input", {
+    type: "text",
+    value: settings.vpsConfig.keyPath ?? "",
+    style: "flex:1 1 auto;min-width:0",
+    spellcheck: "false",
+  }) as HTMLInputElement;
+  const saveVps = () => {
+    settings.vpsConfig = {
+      ...settings.vpsConfig,
+      host: vpsHost.value.trim() || "100.96.41.47",
+      user: vpsUser.value.trim() || "alex",
+      port: Math.max(1, Math.min(65535, Number(vpsPort.value) || 22)),
+      keyPath: vpsKey.value.trim(),
+      alias: settings.vpsConfig.alias || "srv",
+    };
+    void save();
+  };
+
   const screen = h("select", {}) as HTMLSelectElement;
   screen.append(
     h("option", { value: "primary", text: t("Main display") }),
@@ -950,6 +1014,11 @@ function generalSection(): HTMLElement {
     ),
     h("div", { class: "hint", text: t("Hovering the island opens it; it folds again shortly after the pointer leaves. Click inside to keep it open.") }),
     h("div", { class: "row" },
+      h("label", { text: t("Always visible") }),
+      toggle(settings.alwaysCompact, (v) => { settings.alwaysCompact = v; void save(); }),
+    ),
+    h("div", { class: "hint", text: t("Keeps the compact notch visible instead of hiding it as an invisible wake strip.") }),
+    h("div", { class: "row" },
       h("label", { text: t("Auto-close") }),
       autoClose,
       h("span", { class: "hint", text: t("seconds after you leave the island") }),
@@ -961,6 +1030,19 @@ function generalSection(): HTMLElement {
     h("div", { class: "row" },
       h("label", { text: t("Launch at startup") }),
       toggle(settings.autostart, (v) => { settings.autostart = v; void save(); }),
+    ),
+    h("div", { class: "row" },
+      h("label", { text: "VPS" }),
+      vpsUser,
+      h("span", { class: "hint", text: "@" }),
+      vpsHost,
+      vpsPort,
+    ),
+    h("div", { class: "row" },
+      h("label", { text: t("SSH key") }),
+      vpsKey,
+      h("button", { text: t("Save"), onclick: saveVps }),
+      h("button", { text: t("Test connection"), onclick: () => { saveVps(); void Bridge.vpsConnect(); } }),
     ),
     ...recapRows(),
     languageRow(),

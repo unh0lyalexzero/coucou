@@ -9,7 +9,7 @@ use std::process::Command;
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 use ::windows::core::{BOOL, PWSTR};
-use ::windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, HWND, LPARAM, LocalFree, POINT};
+use ::windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL, HWND, LPARAM, POINT};
 use ::windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use ::windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
 use ::windows::Win32::System::Diagnostics::ToolHelp::{
@@ -35,6 +35,10 @@ use crate::session_window::{self, Proc};
 
 /// File name of the Claude Code relay.
 pub const HOOK_EXE: &str = "coucou-hook.exe";
+
+/// File name of the Antigravity adapter. It routes App/IDE/CLI and VS Code
+/// extension events to separate Coucou agents.
+pub const ANTIGRAVITY_HOOK_EXE: &str = "coucou-antigravity-hook.exe";
 
 /// Environment variable holding the home directory.
 pub const HOME_VAR: &str = "USERPROFILE";
@@ -108,8 +112,8 @@ pub fn no_console(cmd: &mut Command) -> &mut Command {
 }
 
 pub fn open_url(url: &str) {
-    let _ = no_console(Command::new("rundll32.exe").args(["url.dll,FileProtocolHandler", url]))
-        .spawn();
+    let _ =
+        no_console(Command::new("rundll32.exe").args(["url.dll,FileProtocolHandler", url])).spawn();
 }
 
 pub fn reveal_folder(path: &str) {
@@ -138,7 +142,11 @@ pub fn find_on_path(stem: &str) -> Option<PathBuf> {
 /// Rust quotes the one fixed argument safely for a `.cmd` (see find_on_path).
 pub fn codex_candidates() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = find_on_path("codex").into_iter().collect();
-    let var = |k: &str| std::env::var_os(k).map(PathBuf::from).filter(|p| p.is_absolute());
+    let var = |k: &str| {
+        std::env::var_os(k)
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
     if let Some(appdata) = var("APPDATA") {
         out.push(appdata.join("npm").join("codex.cmd"));
     }
@@ -207,7 +215,12 @@ extern "system" {
 
 #[link(name = "netapi32")]
 extern "system" {
-    fn NetUserGetInfo(server: *const u16, user: *const u16, level: u32, buffer: *mut *mut u8) -> u32;
+    fn NetUserGetInfo(
+        server: *const u16,
+        user: *const u16,
+        level: u32,
+        buffer: *mut *mut u8,
+    ) -> u32;
     fn NetApiBufferFree(buffer: *mut core::ffi::c_void) -> u32;
 }
 
@@ -217,7 +230,9 @@ const NAME_DISPLAY: i32 = 3;
 /// The account's display name ("Louis Raille"): the directory's for a domain
 /// or Entra account, else the local account's "Full name", else nothing.
 pub fn user_full_name() -> Option<String> {
-    directory_display_name().or_else(local_full_name).filter(|n| !n.trim().is_empty())
+    directory_display_name()
+        .or_else(local_full_name)
+        .filter(|n| !n.trim().is_empty())
 }
 
 fn directory_display_name() -> Option<String> {
@@ -297,7 +312,9 @@ fn hwnd_of(win: &WebviewWindow) -> Option<HWND> {
 ///
 /// Cheap and idempotent, so it is simply re-run whenever a drag might be starting.
 pub fn unblock_webview_drops(app: &AppHandle) {
-    let Some(win) = app.get_webview_window("settings") else { return };
+    let Some(win) = app.get_webview_window("settings") else {
+        return;
+    };
     let Some(hwnd) = hwnd_of(&win) else { return };
     unsafe {
         let _ = EnumChildWindows(Some(hwnd), Some(revoke_render_widget), LPARAM(0));
@@ -366,14 +383,20 @@ pub fn pipe_client_pid(handle: RawHandle) -> Option<u32> {
 fn process_table() -> HashMap<u32, Proc> {
     let mut out = HashMap::new();
     unsafe {
-        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return out };
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return out;
+        };
         let mut entry = PROCESSENTRY32W {
             dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
             ..Default::default()
         };
         let mut more = Process32FirstW(snapshot, &mut entry).is_ok();
         while more {
-            let len = entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(entry.szExeFile.len());
+            let len = entry
+                .szExeFile
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(entry.szExeFile.len());
             out.insert(
                 entry.th32ProcessID,
                 Proc {
@@ -407,7 +430,11 @@ fn top_windows() -> Vec<(isize, u32, String)> {
             let mut text = [0u16; 512];
             let len = GetWindowTextW(hwnd, &mut text);
             if len > 0 {
-                list.push((hwnd.0 as isize, pid, String::from_utf16_lossy(&text[..len as usize])));
+                list.push((
+                    hwnd.0 as isize,
+                    pid,
+                    String::from_utf16_lossy(&text[..len as usize]),
+                ));
             }
         }
         true.into()
@@ -422,7 +449,9 @@ fn top_windows() -> Vec<(isize, u32, String)> {
 /// The first of `pids` that owns a window.
 pub fn first_with_window(pids: &[u32]) -> Option<u32> {
     let windows = top_windows();
-    pids.iter().copied().find(|pid| windows.iter().any(|(_, owner, _)| owner == pid))
+    pids.iter()
+        .copied()
+        .find(|pid| windows.iter().any(|(_, owner, _)| owner == pid))
 }
 
 /// What a session remembers: the ancestor that owns a window, or nothing.
@@ -453,7 +482,9 @@ pub fn focus_process_window(pid: u32, folder: &str) -> bool {
 
 /// Brings forward the window a session remembered (`window_owners`).
 pub fn focus_session_window(owners: &[u32], folder: &str) -> bool {
-    owners.first().is_some_and(|pid| focus_process_window(*pid, folder))
+    owners
+        .first()
+        .is_some_and(|pid| focus_process_window(*pid, folder))
 }
 
 /// Brings forward the window of a running app, by executable name.
@@ -476,8 +507,12 @@ pub fn open_claude_desktop() -> bool {
     if focus_app("claude.exe") {
         return true;
     }
-    let Some(base) = std::env::var_os("LOCALAPPDATA") else { return false };
-    let exe = PathBuf::from(base).join("AnthropicClaude").join("claude.exe");
+    let Some(base) = std::env::var_os("LOCALAPPDATA") else {
+        return false;
+    };
+    let exe = PathBuf::from(base)
+        .join("AnthropicClaude")
+        .join("claude.exe");
     exe.is_file() && Command::new(exe).spawn().is_ok()
 }
 

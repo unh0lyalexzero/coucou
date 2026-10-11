@@ -54,6 +54,7 @@ const OPEN_URLS: Record<string, string> = {
   integration_vercel: "https://vercel.com/dashboard",
   integration_github: "https://github.com",
   integration_stripe: "https://dashboard.stripe.com/payments",
+  integration_paypal: "https://www.paypal.com/mep/dashboard",
   integration_notion: "https://notion.so",
   integration_calcom: "https://app.cal.com/bookings",
 };
@@ -305,6 +306,551 @@ function stripeCard(): HTMLElement {
   );
 }
 
+// ── PayPal ───────────────────────────────────────────────────────────────────
+
+function currencyRank(code: unknown): number {
+  switch (String(code ?? "").toUpperCase()) {
+    case "USD":
+      return 5;
+    case "EUR":
+      return 4;
+    case "GBP":
+      return 3;
+    case "CAD":
+    case "MXN":
+      return 2;
+    case "AUD":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function paypalCard(): HTMLElement {
+  const d = get("integration_paypal");
+  const balances = arr("integration_paypal", "balances")
+    .slice()
+    .sort((a, b) => {
+      const aNum = Math.abs(Number(a.amount ?? 0));
+      const bNum = Math.abs(Number(b.amount ?? 0));
+      if ((aNum > 0) !== (bNum > 0)) return bNum > 0 ? 1 : -1;
+      if (Boolean(a.primary) !== Boolean(b.primary)) return b.primary ? 1 : -1;
+      const rankDiff = currencyRank(b.currency) - currencyRank(a.currency);
+      if (rankDiff !== 0) return rankDiff;
+      return bNum - aNum;
+    });
+  const primary = balances[0] ?? {};
+  const amount = String(primary.amount ?? "0.00");
+  const currency = String(primary.currency ?? "USD").toUpperCase();
+  const secondary = balances.slice(1, 3);
+  const isSandbox = d.environment === "sandbox";
+  const balanceError = typeof d.balanceError === "string" && d.balanceError ? d.balanceError : null;
+  const balancePending = d.balancePending === true;
+  const lastRefreshRaw = typeof d.lastRefreshTime === "string" ? d.lastRefreshTime : "";
+  const refreshBtn = h(
+    "button",
+    {
+      class: "int-more",
+      title: t("Refresh"),
+      onclick: () => void Bridge.refreshIntegration("integration_paypal"),
+    },
+    svg(ICONS.arrowClockwise, 8, { stroke: 2.2 }),
+  );
+  const rows = h("div", { class: "int-rows tight" });
+  if (isSandbox) {
+    rows.append(
+      h(
+        "div",
+        { class: "int-row" },
+        dot("#F5A524", 5),
+        h("span", { class: "int-name", style: "color:#f5a524", text: "Sandbox · Usa claves Live para tu saldo real" }),
+      ),
+    );
+  }
+  if (balancePending && balances.length === 0) {
+    rows.append(
+      h(
+        "div",
+        { class: "int-row", title: "PayPal tarda entre 1 y 3 horas en activar el reporte tras marcar Transaction Search en Live" },
+        dot("#009CDE", 5),
+        h("span", { class: "int-name", style: "color:#8e939c", text: "Live conectado · PayPal indexando saldo (1–3h)" }),
+      ),
+    );
+  } else if (balanceError && balances.length === 0) {
+    rows.append(
+      h(
+        "div",
+        { class: "int-row" },
+        dot("#F4505E", 5),
+        h("span", { class: "int-name", style: "color:#f4505e", text: balanceError }),
+      ),
+    );
+  }
+  const payments = arr("integration_paypal", "payments");
+  for (const p of payments) {
+    rows.append(
+      h(
+        "div",
+        { class: "int-row" },
+        dot("#22C55E", 5),
+        h("span", { class: "int-name", text: String(p.description ?? t("Payment")) }),
+        h("span", { class: "int-amount", style: "color:#22c55e", text: String(p.amount ?? "") }),
+        h("span", { class: "int-ago", text: timeAgo(p.createdAt) }),
+      ),
+    );
+  }
+  const allZero = balances.every((b) => Math.abs(Number(b.amount ?? 0)) < 0.0001);
+  if (payments.length === 0 && !balanceError && !balancePending && !isSandbox) {
+    if (allZero && lastRefreshRaw) {
+      const dt = new Date(lastRefreshRaw);
+      const hm = Number.isNaN(dt.getTime())
+        ? ""
+        : dt.toLocaleTimeString(language(), { hour: "2-digit", minute: "2-digit" });
+      rows.append(
+        h(
+          "div",
+          {
+            class: "int-row",
+            title: "El endpoint Reporting de PayPal actualiza saldos por lotes cada 1–3 horas tras activar Transaction Search",
+          },
+          dot("#009CDE", 5),
+          h("span", {
+            class: "int-name",
+            style: "color:#8e939c",
+            text: hm ? `Corte PayPal ${hm} · Sincronizando próximo lote` : t("No recent payments"),
+          }),
+        ),
+      );
+    } else {
+      rows.append(h("div", { class: "int-empty", text: t("No recent payments") }));
+    }
+  }
+  const balanceRow = h("div", { class: "int-balance" }, h("span", { text: amount }), h("i", { text: currency }));
+  for (const sec of secondary) {
+    const secAmt = String(sec.amount ?? "0.00");
+    const secCur = String(sec.currency ?? "").toUpperCase();
+    if (secCur) {
+      balanceRow.append(
+        h("span", {
+          style: "margin-left:8px;font-size:10px;font-weight:500;color:#8e939c",
+          text: `· ${secAmt} ${secCur}`,
+        }),
+      );
+    }
+  }
+  return h(
+    "div",
+    { class: "int-card" },
+    header("#009CDE", "PayPal", isSandbox ? "Sandbox" : t("Wallet"), refreshBtn),
+    balanceRow,
+    rows,
+  );
+}
+
+// ── VPS ──────────────────────────────────────────────────────────────────────
+
+const vpsCmdHistory: string[] = [];
+let vpsHistoryIdx = -1;
+
+interface VpsViewModel {
+  connected: boolean;
+  connecting: boolean;
+  host: string;
+  accent: string;
+  statusText: string;
+  cpuText: string;
+  cpuWidth: number;
+  cpuColor: string;
+  gpuText: string;
+  gpuWidth: number;
+  gpuColor: string;
+  ramText: string;
+  ramWidth: number;
+  ramColor: string;
+  diskText: string;
+  diskWidth: number;
+  diskColor: string;
+  miniStats: string;
+  outputText: string;
+}
+
+function readVpsViewModel(): VpsViewModel {
+  const data = get("integration_vps");
+  const status = data.status as {
+    connected?: boolean;
+    connecting?: boolean;
+    host?: string;
+    lastLine?: string;
+    cpuPercent?: number | null;
+    gpuPercent?: number | null;
+    gpuUsedMb?: number | null;
+    gpuTotalMb?: number | null;
+    ramUsedMb?: number | null;
+    ramTotalMb?: number | null;
+    ramPercent?: number | null;
+    diskUsedGb?: number | null;
+    diskTotalGb?: number | null;
+    diskPercent?: number | null;
+  } | undefined;
+
+  const connected = status?.connected === true;
+  const connecting = status?.connecting === true;
+  const host = String(status?.host || State.settings.vpsConfig.alias || State.settings.vpsConfig.host || "srv");
+  const accent = connected ? "#22C55E" : connecting ? "#F5A524" : "#6B7079";
+  const statusText = connected ? t("Connected") : connecting ? t("Connecting…") : t("Disconnected");
+
+  const cpuPct = typeof status?.cpuPercent === "number" ? status.cpuPercent : null;
+  const cpuWidth = Math.max(0, Math.min(100, cpuPct ?? 0));
+  const cpuColor = (cpuPct ?? 0) > 85 ? "#F4505E" : (cpuPct ?? 0) > 65 ? "#F5A524" : "#06B6D4";
+  const cpuText = cpuPct != null ? `${cpuPct.toFixed(1)}%` : connected ? "…" : "—";
+
+  const gpuPct = typeof status?.gpuPercent === "number" ? status.gpuPercent : null;
+  const gpuUsedMb = typeof status?.gpuUsedMb === "number" ? status.gpuUsedMb : null;
+  const gpuTotalMb = typeof status?.gpuTotalMb === "number" ? status.gpuTotalMb : null;
+  const gpuWidth = Math.max(0, Math.min(100, gpuPct ?? 0));
+  const gpuColor = (gpuPct ?? 0) > 85 ? "#F4505E" : (gpuPct ?? 0) > 65 ? "#F5A524" : "#3B82F6";
+  const gpuText =
+    gpuPct != null
+      ? gpuUsedMb != null && gpuTotalMb != null && gpuTotalMb > 0
+        ? `${(gpuUsedMb / 1024).toFixed(1)}/${(gpuTotalMb / 1024).toFixed(1)}G (${Math.round(gpuPct)}%)`
+        : `${gpuPct.toFixed(1)}%`
+      : connected
+        ? "0% (N/A)"
+        : "—";
+
+  const ramPct = typeof status?.ramPercent === "number" ? status.ramPercent : null;
+  const ramUsedMb = typeof status?.ramUsedMb === "number" ? status.ramUsedMb : null;
+  const ramTotalMb = typeof status?.ramTotalMb === "number" ? status.ramTotalMb : null;
+  const ramWidth = Math.max(0, Math.min(100, ramPct ?? 0));
+  const ramColor = (ramPct ?? 0) > 85 ? "#F4505E" : (ramPct ?? 0) > 70 ? "#F5A524" : "#22C55E";
+  const ramText =
+    ramUsedMb != null && ramTotalMb != null
+      ? `${(ramUsedMb / 1024).toFixed(1)}/${(ramTotalMb / 1024).toFixed(1)}G (${Math.round(ramPct ?? 0)}%)`
+      : connected
+        ? "…"
+        : "—";
+
+  const diskPct = typeof status?.diskPercent === "number" ? status.diskPercent : null;
+  const diskUsedGb = typeof status?.diskUsedGb === "number" ? status.diskUsedGb : null;
+  const diskTotalGb = typeof status?.diskTotalGb === "number" ? status.diskTotalGb : null;
+  const diskWidth = Math.max(0, Math.min(100, diskPct ?? 0));
+  const diskColor = (diskPct ?? 0) > 85 ? "#F4505E" : (diskPct ?? 0) > 75 ? "#F5A524" : "#A855F7";
+  const diskText =
+    diskUsedGb != null && diskTotalGb != null
+      ? `${Math.round(diskUsedGb)}/${Math.round(diskTotalGb)}G (${Math.round(diskPct ?? 0)}%)`
+      : connected
+        ? "…"
+        : "—";
+
+  const miniStats = `CPU ${cpuPct != null ? `${Math.round(cpuPct)}%` : "—"} · GPU ${gpuPct != null ? `${Math.round(gpuPct)}%` : "0%"} · RAM ${ramPct != null ? `${Math.round(ramPct)}%` : "—"} · DSK ${diskPct != null ? `${Math.round(diskPct)}%` : "—"}`;
+
+  const buffer = Array.isArray(data.buffer) ? (data.buffer as string[]) : [];
+  const rawOut = buffer.join("").slice(-6000);
+  const outputText = rawOut || (connected ? `ssh ${host} — ready. Type a command below.\n` : t("No output yet."));
+
+  return {
+    connected,
+    connecting,
+    host,
+    accent,
+    statusText,
+    cpuText,
+    cpuWidth,
+    cpuColor,
+    gpuText,
+    gpuWidth,
+    gpuColor,
+    ramText,
+    ramWidth,
+    ramColor,
+    diskText,
+    diskWidth,
+    diskColor,
+    miniStats,
+    outputText,
+  };
+}
+
+function releaseVpsFocus() {
+  void Bridge.focusWindow(false);
+  if (!State.pendingApproval) {
+    State.isPinned = false;
+  }
+}
+
+function appendVpsEcho(line: string) {
+  const info = State.integrations.integration_vps ?? { data: {}, error: null, loaded: true, configured: true };
+  const buffer = Array.isArray(info.data.buffer) ? [...(info.data.buffer as string[])] : [];
+  buffer.push(line);
+  while (buffer.length > 200) buffer.shift();
+  info.data = { ...info.data, buffer };
+  State.integrations.integration_vps = info;
+  State.notify();
+}
+
+export function syncVpsCard(container: HTMLElement, _task: AgentTask) {
+  const vm = readVpsViewModel();
+
+  const hostEl = container.querySelector<HTMLElement>('[data-vps="host"]');
+  if (hostEl) hostEl.textContent = `ssh ${vm.host}`;
+
+  const dotEl = container.querySelector<HTMLElement>('[data-vps="status-dot"]');
+  if (dotEl) dotEl.style.background = vm.accent;
+
+  const statusTextEl = container.querySelector<HTMLElement>('[data-vps="status-text"]');
+  if (statusTextEl) statusTextEl.textContent = vm.statusText;
+
+  const setMeter = (prefix: string, width: number, color: string, text: string) => {
+    const fill = container.querySelector<HTMLElement>(`[data-vps="${prefix}-fill"]`);
+    if (fill) {
+      fill.style.width = `${width}%`;
+      fill.style.background = color;
+    }
+    const val = container.querySelector<HTMLElement>(`[data-vps="${prefix}-val"]`);
+    if (val) val.textContent = text;
+  };
+
+  setMeter("cpu", vm.cpuWidth, vm.cpuColor, vm.cpuText);
+  setMeter("gpu", vm.gpuWidth, vm.gpuColor, vm.gpuText);
+  setMeter("ram", vm.ramWidth, vm.ramColor, vm.ramText);
+  setMeter("disk", vm.diskWidth, vm.diskColor, vm.diskText);
+
+  const miniStatsEl = container.querySelector<HTMLElement>('[data-vps="mini-stats"]');
+  if (miniStatsEl) miniStatsEl.textContent = vm.miniStats;
+
+  const connectBtn = container.querySelector<HTMLButtonElement>('[data-vps="connect-btn"]');
+  if (connectBtn) connectBtn.textContent = vm.connected ? t("Refresh") : t("Connect");
+
+  const pre = container.querySelector<HTMLElement>('[data-vps="term-output"]');
+  if (pre && pre.textContent !== vm.outputText) {
+    pre.textContent = vm.outputText;
+    pre.scrollTop = pre.scrollHeight;
+  }
+}
+
+function vpsCard(task: AgentTask, detailOpen: boolean, onDetail: () => void, onBack: () => void): HTMLElement {
+  const vm = readVpsViewModel();
+
+  const openInlineTerminal = () => {
+    if (!vm.connected && !vm.connecting) {
+      void Bridge.vpsConnect();
+    }
+    onDetail();
+  };
+
+  if (!detailOpen) {
+    const statusDot = dot(vm.accent, 5);
+    statusDot.setAttribute("data-vps", "status-dot");
+
+    const headRight = h(
+      "div",
+      { class: "vps-head-right" },
+      h(
+        "span",
+        { class: "vps-status-chip" },
+        statusDot,
+        h("span", { "data-vps": "status-text", text: vm.statusText }),
+      ),
+      h("button", {
+        class: "vps-term-open-btn",
+        title: `ssh ${vm.host}`,
+        text: `>_ ${t("Terminal")}`,
+        onclick: openInlineTerminal,
+      }),
+    );
+
+    const meterRow = (key: string, label: string, width: number, color: string, text: string) =>
+      h(
+        "div",
+        { class: "vps-meter-row" },
+        h("span", { class: "vps-meter-label", text: label }),
+        h(
+          "div",
+          { class: "vps-meter-track" },
+          h("div", {
+            class: "vps-meter-fill",
+            "data-vps": `${key}-fill`,
+            style: `width:${width}%;background:${color}`,
+          }),
+        ),
+        h("span", { class: "vps-meter-val", "data-vps": `${key}-val`, text }),
+      );
+
+    return h(
+      "div",
+      { class: "int-card vps-card" },
+      h(
+        "div",
+        { class: "int-head vps-head" },
+        dot(task.color, 7),
+        h("b", { text: "VPS" }),
+        h("span", { class: "vps-host-tag", "data-vps": "host", text: `ssh ${vm.host}` }),
+        headRight,
+      ),
+      h(
+        "div",
+        { class: "vps-monitor" },
+        meterRow("cpu", "CPU", vm.cpuWidth, vm.cpuColor, vm.cpuText),
+        meterRow("gpu", "GPU", vm.gpuWidth, vm.gpuColor, vm.gpuText),
+        meterRow("ram", "RAM", vm.ramWidth, vm.ramColor, vm.ramText),
+        meterRow("disk", "DISK", vm.diskWidth, vm.diskColor, vm.diskText),
+      ),
+      h(
+        "div",
+        { class: "int-actions vps-actions" },
+        h("button", {
+          class: "link-btn",
+          "data-vps": "connect-btn",
+          style: `color:${task.color}d9`,
+          text: vm.connected ? t("Refresh") : t("Connect"),
+          onclick: () => void (vm.connected ? Bridge.refreshIntegration("integration_vps") : Bridge.vpsConnect()),
+        }),
+        h("button", {
+          class: "link-btn",
+          style: `color:${task.color}d9`,
+          text: `>_ ssh ${vm.host}`,
+          onclick: openInlineTerminal,
+        }),
+      ),
+    );
+  }
+
+  const statusDot = dot(vm.accent, 6);
+  statusDot.setAttribute("data-vps", "status-dot");
+
+  const pre = h("pre", {
+    class: "int-detail-text vps-term-output",
+    "data-vps": "term-output",
+    text: vm.outputText,
+  });
+
+  const input = h("input", {
+    class: "vps-term-input",
+    type: "text",
+    spellcheck: "false",
+    autocomplete: "off",
+    placeholder: `ssh ${vm.host} — comando (ej. uptime, docker ps, df -h)…`,
+  }) as HTMLInputElement;
+
+  const activateInput = () => {
+    State.isPinned = true;
+    void Bridge.focusWindow(true);
+  };
+
+  input.addEventListener("mousedown", () => {
+    activateInput();
+  });
+  input.addEventListener("focus", () => {
+    activateInput();
+  });
+  input.addEventListener("blur", () => {
+    releaseVpsFocus();
+  });
+
+  const send = () => {
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    vpsCmdHistory.push(cmd);
+    vpsHistoryIdx = vpsCmdHistory.length;
+    input.value = "";
+    appendVpsEcho(`$ ${cmd}\n`);
+    const current = readVpsViewModel();
+    if (!current.connected && !current.connecting) {
+      void Bridge.vpsConnect()
+        .then(() => Bridge.vpsWrite(`${cmd}\n`))
+        .catch((err) => appendVpsEcho(`[error] ${String(err)}\n`));
+    } else {
+      void Bridge.vpsWrite(`${cmd}\n`).catch((err) => appendVpsEcho(`[error] ${String(err)}\n`));
+    }
+  };
+
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      send();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      input.blur();
+      releaseVpsFocus();
+      onBack();
+    } else if (e.key === "ArrowUp") {
+      if (vpsCmdHistory.length > 0 && vpsHistoryIdx > 0) {
+        e.preventDefault();
+        vpsHistoryIdx--;
+        input.value = vpsCmdHistory[vpsHistoryIdx] ?? "";
+      }
+    } else if (e.key === "ArrowDown") {
+      if (vpsHistoryIdx < vpsCmdHistory.length - 1) {
+        e.preventDefault();
+        vpsHistoryIdx++;
+        input.value = vpsCmdHistory[vpsHistoryIdx] ?? "";
+      } else {
+        vpsHistoryIdx = vpsCmdHistory.length;
+        input.value = "";
+      }
+    }
+  });
+
+  pre.addEventListener("click", () => {
+    activateInput();
+    input.focus();
+  });
+
+  requestAnimationFrame(() => {
+    pre.scrollTop = pre.scrollHeight;
+    activateInput();
+    input.focus();
+  });
+
+  return h(
+    "div",
+    { class: "int-card detail vps-card vps-term-card" },
+    h(
+      "div",
+      { class: "int-detail-head vps-term-head" },
+      h(
+        "button",
+        {
+          class: "int-back",
+          title: t("Back"),
+          onclick: () => {
+            releaseVpsFocus();
+            onBack();
+          },
+        },
+        svg(ICONS.chevronLeft, 10, { stroke: 2.4 }),
+      ),
+      statusDot,
+      h("b", { "data-vps": "host", text: `ssh ${vm.host}` }),
+      h("span", { class: "vps-mini-stats", "data-vps": "mini-stats", text: vm.miniStats }),
+      h("button", {
+        class: "vps-head-action",
+        text: t("Clear"),
+        onclick: () => {
+          const info = State.integrations.integration_vps;
+          if (info) info.data = { ...info.data, buffer: [] };
+          State.notify();
+        },
+      }),
+      h("button", {
+        class: "vps-head-action",
+        text: "↻",
+        title: t("Reconnect"),
+        onclick: () => void Bridge.vpsConnect(),
+      }),
+    ),
+    pre,
+    h(
+      "div",
+      { class: "vps-term-input-row" },
+      h("span", { class: "vps-prompt", text: `${vm.host}$` }),
+      input,
+      h("button", { class: "vps-send-btn", title: t("Send"), text: "↵", onclick: send }),
+    ),
+  );
+}
+
 // ── Notion ────────────────────────────────────────────────────────────────────
 
 function notionCard(): HTMLElement {
@@ -436,6 +982,10 @@ export function hasIntegrationData(id: string): boolean {
       return get(id).totalRepos != null || readPulse(get(id)) != null;
     case "integration_stripe":
       return info.loaded;
+    case "integration_paypal":
+      return info.loaded;
+    case "integration_vps":
+      return true;
     case "integration_notion":
       return arr(id, "pages").length > 0;
     case "integration_calcom":
@@ -452,6 +1002,7 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
       ? n8nDetail(task, hooks.closeDetail)
       : n8nCard(task, hooks.openDetail, hooks.openSettings);
   }
+  if (task.id === "integration_vps") return vpsCard(task, hooks.detailOpen, hooks.openDetail, hooks.closeDetail);
   if (task.id === "integration_vercel" && hasIntegrationData(task.id)) {
     return hooks.detailOpen ? vercelDetail(hooks.closeDetail) : vercelCard(hooks.openDetail);
   }
@@ -475,6 +1026,8 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
       return githubCard();
     case "integration_stripe":
       return stripeCard();
+    case "integration_paypal":
+      return paypalCard();
     case "integration_notion":
       return notionCard();
     case "integration_calcom":

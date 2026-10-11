@@ -2,7 +2,7 @@
 // pollers: a genuinely new item flips the pill to finished/error, badges it when
 // the pill isn't focused, plays a sound, and clears itself after 60 s.
 
-import { onEvent, Bridge, type IntegrationUpdate } from "../core/bridge";
+import { onEvent, Bridge, type IntegrationUpdate, type VpsStatus } from "../core/bridge";
 import { gitHubAlert, type GitHubEvent } from "../core/github";
 import { availablePills } from "../core/pills";
 import { Sound } from "../core/sound";
@@ -16,8 +16,44 @@ const clearTimers = new Map<string, number>();
 export function registerIntegrationHandlers(island: Island) {
   void onEvent<IntegrationUpdate>("integration", (update) => handle(island, update));
   void onEvent<GitHubEvent[]>("github-alerts", handleGitHubAlerts);
+  void onEvent<{ chunk: string }>("vps-output", handleVpsOutput);
+  void onEvent<VpsStatus>("vps-status", handleVpsStatus);
+  void onEvent<string>("secrets-changed", () => void refreshConfigured());
+  void onEvent<unknown>("settings-changed", () => void refreshConfigured());
   void refreshConfigured();
   State.subscribe(refreshGitHubWhenShown);
+}
+
+function vpsInfo() {
+  const info = State.integrations.integration_vps ?? { data: {}, error: null, loaded: false, configured: true };
+  State.integrations.integration_vps = info;
+  return info;
+}
+
+function handleVpsOutput(update: { chunk: string }) {
+  const info = vpsInfo();
+  const buffer = Array.isArray(info.data.buffer) ? [...info.data.buffer] as string[] : [];
+  buffer.push(update.chunk);
+  while (buffer.length > 200) buffer.shift();
+  const lastLine = update.chunk.trim().split(/\r?\n/).filter(Boolean).pop() ?? "";
+  info.data = { ...info.data, buffer, lastLine };
+  info.loaded = true;
+  State.notify();
+}
+
+function handleVpsStatus(status: VpsStatus) {
+  const info = vpsInfo();
+  info.data = { ...info.data, status, lastLine: status.lastLine || info.data.lastLine };
+  info.error = status.error;
+  info.loaded = true;
+  info.configured = true;
+  const task = State.tasks.find((t) => t.id === "integration_vps");
+  if (task) {
+    task.state = status.connecting ? "thinking" : "idle";
+    task.steps = [];
+    task.stepIndex = 0;
+  }
+  State.notify();
 }
 
 /**
@@ -38,12 +74,27 @@ export function handleGitHubAlerts(events: GitHubEvent[]) {
 }
 
 let gitHubShown = false;
+let paypalShown = false;
 
 /** The GitHub card just came on screen (focused, island opened): refresh it if stale. */
 function refreshGitHubWhenShown() {
   const shown = State.mode === "expanded" && State.focusTask?.id === GITHUB;
   if (shown && !gitHubShown) void Bridge.githubRefresh("pulse");
   gitHubShown = shown;
+  if (State.mode === "expanded" && State.focusTask?.id === "integration_vps") {
+    const st = (State.integrations.integration_vps?.data?.status ?? null) as VpsStatus | null;
+    if (!st?.connected && !st?.connecting) {
+      void Bridge.refreshIntegration("integration_vps");
+    }
+  }
+  const ppShown = State.mode === "expanded" && State.focusTask?.id === "integration_paypal";
+  if (ppShown && !paypalShown) {
+    const info = State.integrations.integration_paypal;
+    if (info?.configured) {
+      void Bridge.refreshIntegration("integration_paypal");
+    }
+  }
+  paypalShown = ppShown;
 }
 
 /**
@@ -57,7 +108,13 @@ export async function refreshConfigured() {
     let configured: boolean;
     switch (def.connect.kind) {
       case "key":
-        configured = (await Bridge.secretPresent(def.connect.key)) ?? false;
+        if (def.id === "integration_paypal") {
+          const idOk = (await Bridge.secretPresent("paypal-client-id")) ?? false;
+          const secOk = (await Bridge.secretPresent("paypal-client-secret")) ?? false;
+          configured = idOk && secOk;
+        } else {
+          configured = (await Bridge.secretPresent(def.connect.key)) ?? false;
+        }
         break;
       case "hooks":
         // Without an answer from Rust (a plain browser), the Claude Code pill
@@ -71,10 +128,21 @@ export async function refreshConfigured() {
         break;
       case "none":
         configured = true;
+        if (def.id === "integration_vps") {
+          void Bridge.vpsStatus().then((st) => {
+            if (st) handleVpsStatus(st);
+            if (!st?.connected && !st?.connecting) {
+              void Bridge.refreshIntegration("integration_vps");
+            }
+          });
+        }
         break;
     }
     const info = State.integrations[def.id] ?? { data: {}, error: null, loaded: false, configured: false };
     State.integrations[def.id] = { ...info, configured };
+    if (def.id === "integration_paypal" && configured) {
+      void Bridge.refreshIntegration("integration_paypal");
+    }
   }
   State.notify();
 }

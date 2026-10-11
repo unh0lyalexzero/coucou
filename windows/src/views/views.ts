@@ -10,13 +10,13 @@ import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
-import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { renderIntegrationCard, syncVpsCard, type IntegrationCardHooks } from "./integrations";
 import { highlightRow, listRows, openRow } from "./github";
 import { pillDefinition, sessionSubtitle } from "../core/pills";
 import {
   PlanCard, buildPlanPill, claudePillVisible, codexPillVisible, planCardOpen, refreshCodexPlanUsage,
 } from "./usage";
-import { buildDiffCard } from "./diff";
+import { buildDiffCard, buildInlineCodePreview } from "./diff";
 import { lastTextStep } from "../core/diff";
 import { Bridge } from "../core/bridge";
 import { buildRecap } from "./recap";
@@ -169,20 +169,19 @@ export function buildHeader(actions: ViewActions): ViewHost {
 // ── Overview ──────────────────────────────────────────────────────────────────
 
 function buildOverview(actions: ViewActions): ViewHost {
-  /** The diff open in the left card (a FileDiff id), as activeDiffId on macOS. */
-  let activeDiffId: number | null = null;
   const closeDiff = () => {
-    if (activeDiffId == null) return;
-    activeDiffId = null;
+    if (State.activeDiffId == null) return;
+    State.activeDiffId = null;
     State.notify();
   };
   const ticker = new Ticker((diffId) => {
     actions.blip();
-    activeDiffId = diffId;
+    State.activeDiffId = diffId;
     State.notify();
   });
   const who = h("div", { class: "who" });
-  const tickerBody = h("div", { class: "card-body" }, who, ticker.el);
+  const codePreviewSlot = h("div", { class: "code-preview-slot" });
+  const tickerBody = h("div", { class: "card-body" }, who, ticker.el, codePreviewSlot);
   const leftBody = h("div", { class: "left-body" });
   const jump = h(
     "button",
@@ -192,6 +191,7 @@ function buildOverview(actions: ViewActions): ViewHost {
   const left = card(null, leftBody, jump);
   const pills = h("div", { class: "pills" });
   const right = card(null, pills);
+  const rightWrap = h("div", { class: "right" }, right);
   // Opened from a plan pill in the header: stands in for the left card.
   const plan = new PlanCard();
   let planTimer: number | null = null;
@@ -202,7 +202,7 @@ function buildOverview(actions: ViewActions): ViewHost {
 
   const el = h("div", { class: "view overview" },
     h("div", { class: "left" }, left),
-    h("div", { class: "right" }, right),
+    rightWrap,
   );
 
   let pillIds = "";
@@ -210,20 +210,21 @@ function buildOverview(actions: ViewActions): ViewHost {
   let lastFocus: string | null = null;
   let mode: "ticker" | "card" | "plan" | "diff" | "spotify" | null = null;
   let cardKey = "";
+  let lastPreviewKey = "";
   /** The list row highlighted at the last sync, to scroll only when it moves. */
   let shownSelection: number | null = null;
 
   // Leaving the overview or folding the island closes the diff, as on macOS.
   State.subscribe(() => {
-    if (activeDiffId != null && (State.view !== "overview" || State.mode !== "expanded")) {
-      activeDiffId = null;
+    if (State.activeDiffId != null && (State.view !== "overview" || State.mode !== "expanded")) {
+      State.activeDiffId = null;
     }
   });
   // Escape steps back out of the diff before it closes the island.
   window.addEventListener(
     "keydown",
     (e) => {
-      if (e.key !== "Escape" || activeDiffId == null || State.view !== "overview") return;
+      if (e.key !== "Escape" || State.activeDiffId == null || State.view !== "overview") return;
       e.stopImmediatePropagation();
       closeDiff();
     },
@@ -277,7 +278,7 @@ function buildOverview(actions: ViewActions): ViewHost {
       }
       // Ctrl+E (⌘E, islandToggleDiff): closes the diff that is open, else
       // opens the focused pill's latest edit.
-      if (activeDiffId != null) {
+      if (State.activeDiffId != null) {
         closeDiff();
         return;
       }
@@ -285,7 +286,7 @@ function buildOverview(actions: ViewActions): ViewHost {
       const diffs = task ? State.sessionDiffs.get(task.id) : undefined;
       const last = diffs?.[diffs.length - 1];
       if (last?.id == null) return;
-      activeDiffId = last.id;
+      State.activeDiffId = last.id;
       State.notify();
     },
     sync() {
@@ -293,8 +294,9 @@ function buildOverview(actions: ViewActions): ViewHost {
       if (task?.id !== lastFocus) {
         lastFocus = task?.id ?? null;
         detailOpen = false;
-        activeDiffId = null;
+        State.activeDiffId = null;
         cardKey = "";
+        lastPreviewKey = "";
         mode = null;
       }
 
@@ -310,8 +312,8 @@ function buildOverview(actions: ViewActions): ViewHost {
       syncPlanTimer(planOpen);
 
       // A diff that has since been dropped (cap, expiry, session end) just closes.
-      const diff = task && activeDiffId != null ? State.findDiff(task.id, activeDiffId) : null;
-      if (!diff) activeDiffId = null;
+      const diff = task && State.activeDiffId != null ? State.findDiff(task.id, State.activeDiffId) : null;
+      if (!diff) State.activeDiffId = null;
 
       if (planOpen) {
         if (mode !== "plan") {
@@ -321,7 +323,7 @@ function buildOverview(actions: ViewActions): ViewHost {
         }
         plan.sync();
       } else if (task && diff) {
-        const key = `diff~${task.id}~${diff.id}`;
+        const key = `diff~${task.id}~${diff.id}~${task.steps.length}`;
         if (key !== cardKey) {
           cardKey = key;
           mode = "diff";
@@ -332,7 +334,12 @@ function buildOverview(actions: ViewActions): ViewHost {
               closeDiff();
             },
             open: (path) => void Bridge.openFileInVSCode(path),
-          }));
+            selectDiff: (id) => {
+              actions.blip();
+              State.activeDiffId = id;
+              State.notify();
+            },
+          }, task));
         }
       } else if (task && sessionActive) {
         if (mode !== "ticker") {
@@ -340,14 +347,16 @@ function buildOverview(actions: ViewActions): ViewHost {
           leftBody.append(tickerBody);
           mode = "ticker";
           cardKey = "";
+          lastPreviewKey = "";
         }
         clear(who);
-        // The agent's name is already the pill's: the label says what kind of
-        // pill it is, as on the Mac (PillDefinition.sessionSubtitle).
+        const cwdParts = task.sessionCwd ? task.sessionCwd.replace(/\\/g, "/").split("/").filter(Boolean) : [];
+        const projName = cwdParts.length > 0 ? cwdParts[cwdParts.length - 1] : task.name;
+        const agentLabel = pillDefinition(task.id)?.name ?? t(sessionSubtitle(task.id));
         who.append(
           dot(task.color, 7),
-          h("span", { class: "name", text: task.name }),
-          h("span", { class: "tool", text: t(sessionSubtitle(task.id)) }),
+          h("span", { class: "name", text: projName }),
+          h("span", { class: "tool", text: projName !== agentLabel ? agentLabel : t(sessionSubtitle(task.id)) }),
         );
         if (task.steps.length > 1) {
           who.append(h("span", {
@@ -356,6 +365,23 @@ function buildOverview(actions: ViewActions): ViewHost {
           }));
         }
         ticker.sync(task);
+
+        const diffs = State.sessionDiffs.get(task.id);
+        const latestDiff = diffs && diffs.length > 0 ? diffs[diffs.length - 1] : null;
+        tickerBody.classList.toggle("has-preview", Boolean(latestDiff));
+        const previewKey = latestDiff ? `${latestDiff.id}:${latestDiff.hunks.length}` : "none";
+        if (previewKey !== lastPreviewKey) {
+          lastPreviewKey = previewKey;
+          clear(codePreviewSlot);
+          if (latestDiff) {
+            const previewEl = buildInlineCodePreview(latestDiff, (diffId) => {
+              actions.blip();
+              State.activeDiffId = diffId;
+              State.notify();
+            });
+            if (previewEl) codePreviewSlot.append(previewEl);
+          }
+        }
       } else if (task && task.id === SPOTIFY_ID) {
         // Its own card for every state: playing, idle, not installed.
         if (mode !== "spotify") {
@@ -365,6 +391,15 @@ function buildOverview(actions: ViewActions): ViewHost {
           cardKey = "";
         }
         spotifyCard.sync();
+      } else if (task && task.id === "integration_vps") {
+        const key = [language(), task.id, task.color, detailOpen].join("~");
+        if (key !== cardKey) {
+          cardKey = key;
+          mode = "card";
+          clear(leftBody);
+          leftBody.append(renderIntegrationCard(task, hooks));
+        }
+        syncVpsCard(leftBody, task);
       } else if (task) {
         const info = State.integrations[task.id];
         const key = [
@@ -380,7 +415,9 @@ function buildOverview(actions: ViewActions): ViewHost {
         }
       }
 
-      jump.style.display = detailOpen || mode === "plan" || mode === "diff" ? "none" : "";
+      el.classList.toggle("diff-open", mode === "diff");
+      rightWrap.style.display = mode === "diff" ? "none" : "";
+      jump.style.display = detailOpen || mode === "plan" || mode === "diff" || task?.id === "integration_vps" ? "none" : "";
 
       // Ctrl+↓ Ctrl+↑ walk the open GitHub list (cardItemCount / cardSelection).
       const rows = mode === "card" ? listRows(leftBody) : [];
@@ -415,6 +452,7 @@ function buildOverview(actions: ViewActions): ViewHost {
  * any other tagged agent — with something going on.
  */
 export function hasSessionTicker(task: AgentTask): boolean {
+  if (task.id === "integration_vps") return false;
   // A pill made for an agent's session (Gemini CLI, Codex… not declared) only
   // exists while that session does: it keeps the ticker from the first event.
   if (task.source === "agent" && !task.isIntegration) return true;
@@ -569,8 +607,16 @@ function buildQuestion(actions: ViewActions): ViewHost {
     answers[question] = answer;
     picked = new Set();
     index += 1;
-    if (index >= total) actions.answer(answers);
-    else State.notify();
+    if (index >= total) {
+      if (!State.pendingApproval?.requestId) {
+        actions.openTerminal();
+        actions.answerInTerminal();
+      } else {
+        actions.answer(answers);
+      }
+    } else {
+      State.notify();
+    }
   };
 
   return {

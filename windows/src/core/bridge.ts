@@ -163,6 +163,12 @@ export const Bridge = {
 
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
+  paypalRefresh: () => call<void>("paypal_refresh"),
+  vpsConnect: () => callOrThrow<VpsStatus>("vps_connect"),
+  vpsDisconnect: () => call<void>("vps_disconnect"),
+  vpsWrite: (data: string) => callOrThrow<void>("vps_write", { data }),
+  vpsResize: (cols: number, rows: number) => call<void>("vps_resize", { cols, rows }),
+  vpsStatus: () => call<VpsStatus>("vps_status"),
   /** The GitHub card is on screen: refetch that part if it is stale. */
   githubRefresh: (section: "pulse" | "activity") => call<void>("github_refresh", { section }),
   /** Opens the configured n8n instance in the browser. */
@@ -266,6 +272,24 @@ export interface IntegrationUpdate {
   data: Record<string, unknown>;
   error: string | null;
   event: { success: boolean; label: string; detail: string | null } | null;
+}
+
+export interface VpsStatus {
+  connected: boolean;
+  connecting: boolean;
+  host: string;
+  lastLine: string;
+  error: string | null;
+  cpuPercent?: number | null;
+  gpuPercent?: number | null;
+  gpuUsedMb?: number | null;
+  gpuTotalMb?: number | null;
+  ramUsedMb?: number | null;
+  ramTotalMb?: number | null;
+  ramPercent?: number | null;
+  diskUsedGb?: number | null;
+  diskTotalGb?: number | null;
+  diskPercent?: number | null;
 }
 
 export type ChatContext =

@@ -19,6 +19,8 @@ pub struct Settings {
     /// Hovering the island opens it all the way, and it folds again shortly
     /// after the pointer leaves (the Mac's "Open on hover"). Off by default.
     pub open_on_hover: bool,
+    /// Keep the compact island visible instead of shrinking to the wake strip.
+    pub always_compact: bool,
     pub absence_interval: f64,
     pub active_integrations: Vec<String>,
     /// The always-on workspace pill (src/core/pills.ts checks it is one).
@@ -69,6 +71,32 @@ pub struct Settings {
     /// Mochi on the desktop: whether he lives there, and his spot. Owned by
     /// the Rust side (desktop.rs) — what a webview sends back is ignored.
     pub desktop_mochi: DesktopMochiPref,
+    /// Read-only metadata for the SSH mini-terminal. Secrets stay in keyring.
+    pub vps_config: VpsConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct VpsConfig {
+    pub host: String,
+    pub user: String,
+    pub port: u16,
+    pub key_path: String,
+    pub alias: String,
+    pub shell: String,
+}
+
+impl Default for VpsConfig {
+    fn default() -> Self {
+        Self {
+            host: "100.96.41.47".into(),
+            user: "alex".into(),
+            port: 22,
+            key_path: "~/.ssh/id_ed25519_codex".into(),
+            alias: "srv".into(),
+            shell: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -99,6 +127,7 @@ impl Default for Settings {
             sound_volume: 0.12,
             auto_close_interval: 15.0,
             open_on_hover: false,
+            always_compact: true,
             absence_interval: 180.0,
             active_integrations: vec![
                 "integration_resend".into(),
@@ -124,6 +153,7 @@ impl Default for Settings {
             pill_colors: BTreeMap::new(),
             language: String::new(),
             desktop_mochi: DesktopMochiPref::default(),
+            vps_config: VpsConfig::default(),
         }
     }
 }
@@ -132,6 +162,12 @@ pub use crate::platform::{config_dir, local_dir};
 
 pub fn hook_exe_path() -> PathBuf {
     local_dir().join("bin").join(crate::platform::HOOK_EXE)
+}
+
+pub fn antigravity_hook_exe_path() -> PathBuf {
+    local_dir()
+        .join("bin")
+        .join(crate::platform::ANTIGRAVITY_HOOK_EXE)
 }
 
 fn settings_path() -> PathBuf {
@@ -221,7 +257,10 @@ fn load_from(path: &Path) -> Settings {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == ErrorKind::NotFound => return Settings::default(),
         Err(err) => {
-            note(format!("can't read {}: {err} — using the defaults", path.display()));
+            note(format!(
+                "can't read {}: {err} — using the defaults",
+                path.display()
+            ));
             protect(path);
             return Settings::default();
         }
@@ -234,7 +273,10 @@ fn load_from(path: &Path) -> Settings {
                 copy.display()
             )),
             Err(err) => {
-                note(format!("{} is not usable and could not be copied: {err}", path.display()));
+                note(format!(
+                    "{} is not usable and could not be copied: {err}",
+                    path.display()
+                ));
                 protect(path);
             }
         }
@@ -260,14 +302,21 @@ fn keep_what_was_not_loaded(path: &Path) -> std::io::Result<()> {
     match std::fs::read(path) {
         Ok(bytes) => {
             let copy = set_aside(path, "unread", &bytes)?;
-            note(format!("{} was never loaded — kept as {}", path.display(), copy.display()));
+            note(format!(
+                "{} was never loaded — kept as {}",
+                path.display(),
+                copy.display()
+            ));
         }
         // Gone since: nothing is left to protect.
         Err(err) if err.kind() == ErrorKind::NotFound => {}
         Err(err) => {
             return Err(std::io::Error::new(
                 err.kind(),
-                format!("{} still can't be read, so it is left as it is: {err}", path.display()),
+                format!(
+                    "{} still can't be read, so it is left as it is: {err}",
+                    path.display()
+                ),
             ));
         }
     }
@@ -298,7 +347,11 @@ fn same_copy(path: &Path, kind: &str, bytes: &[u8]) -> Option<PathBuf> {
         .ok()?
         .filter_map(Result::ok)
         .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
-        .filter(|entry| entry.metadata().is_ok_and(|m| m.len() == bytes.len() as u64))
+        .filter(|entry| {
+            entry
+                .metadata()
+                .is_ok_and(|m| m.len() == bytes.len() as u64)
+        })
         .map(|entry| entry.path())
         .find(|copy| std::fs::read(copy).is_ok_and(|held| held == bytes))
 }
@@ -321,7 +374,11 @@ fn set_aside_as(
             0 => path.with_file_name(&base),
             n => path.with_file_name(format!("{base}-{n}")),
         };
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&copy) {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&copy)
+        {
             Ok(mut file) => {
                 let written = write(&mut file, bytes);
                 drop(file);
@@ -334,7 +391,10 @@ fn set_aside_as(
             Err(err) => return Err(err),
         }
     }
-    Err(std::io::Error::new(ErrorKind::AlreadyExists, format!("too many copies named {base}")))
+    Err(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        format!("too many copies named {base}"),
+    ))
 }
 
 /// Writes `bytes` to `file` and waits until they are on the disk.
@@ -381,6 +441,7 @@ mod tests {
   "soundVolume": 0.5,
   "autoCloseInterval": 30.0,
   "openOnHover": true,
+  "alwaysCompact": false,
   "absenceInterval": 60.0,
   "activeIntegrations": ["integration_notion"],
   "mainPill": "agent_cursor",
@@ -400,7 +461,8 @@ mod tests {
   "mochiOutfit": "witchHat",
   "pillColors": { "integration_claude": "#2DD4BF" },
   "language": "pt-BR",
-  "desktopMochi": { "onDesktop": true, "spot": { "x": 1500.5, "y": -300.0, "space": "screen" } }
+  "desktopMochi": { "onDesktop": true, "spot": { "x": 1500.5, "y": -300.0, "space": "screen" } },
+  "vpsConfig": { "host": "srv.example", "user": "alex", "port": 2222, "keyPath": "C:/Users/me/.ssh/key", "alias": "srv", "shell": "fish" }
 }"##;
 
     fn custom() -> Value {
@@ -428,8 +490,8 @@ mod tests {
 
     /// A fresh directory of our own, and the settings.json it will hold.
     fn scratch(name: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir()
-            .join(format!("coucou-settings-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("coucou-settings-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("settings.json");
@@ -517,7 +579,11 @@ mod tests {
         assert_eq!(loaded.desktop_mochi, DesktopMochiPref::default());
         assert_eq!(loaded.model, "some-model");
 
-        let loaded = parse(&custom_with("desktopMochi", Some(json!({ "onDesktop": true })))).unwrap();
+        let loaded = parse(&custom_with(
+            "desktopMochi",
+            Some(json!({ "onDesktop": true })),
+        ))
+        .unwrap();
         assert!(loaded.desktop_mochi.on_desktop);
         assert_eq!(loaded.desktop_mochi.spot, None);
     }
@@ -532,8 +598,15 @@ mod tests {
     #[test]
     fn pill_colours_are_kept_as_written_and_cost_nothing_else_when_unusable() {
         // A pill a newer build added keeps its colour through a save by this one.
-        let loaded = parse(&custom_with("pillColors", Some(json!({ "agent_new": "#abcdef" })))).unwrap();
-        assert_eq!(loaded.pill_colors.get("agent_new").map(String::as_str), Some("#abcdef"));
+        let loaded = parse(&custom_with(
+            "pillColors",
+            Some(json!({ "agent_new": "#abcdef" })),
+        ))
+        .unwrap();
+        assert_eq!(
+            loaded.pill_colors.get("agent_new").map(String::as_str),
+            Some("#abcdef")
+        );
         // Not a map of strings: the colours fall back, and nothing else does.
         let loaded = parse(&custom_with("pillColors", Some(json!(["#2DD4BF"])))).unwrap();
         assert!(loaded.pill_colors.is_empty());
@@ -548,7 +621,12 @@ mod tests {
         assert_eq!(loaded.mochi_outfit, "topHat");
         // The language too: "" (follow the system) when absent, as it comes otherwise.
         assert_eq!(parse(&custom_with("language", None)).unwrap().language, "");
-        assert_eq!(parse(&custom_with("language", Some(json!("xx")))).unwrap().language, "xx");
+        assert_eq!(
+            parse(&custom_with("language", Some(json!("xx"))))
+                .unwrap()
+                .language,
+            "xx"
+        );
     }
 
     #[test]
@@ -637,7 +715,11 @@ mod tests {
     #[cfg(windows)]
     fn locked(path: &Path) -> std::fs::File {
         use std::os::windows::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().read(true).share_mode(0).open(path).unwrap()
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .unwrap()
     }
 
     #[cfg(windows)]
@@ -730,7 +812,13 @@ mod tests {
             Err(std::io::Error::other("the disk is full"))
         }
         let (dir, file) = scratch("half");
-        let copy = set_aside_as(&file, "corrupt", "20260102-030405", b"all of it", half_then_fail);
+        let copy = set_aside_as(
+            &file,
+            "corrupt",
+            "20260102-030405",
+            b"all of it",
+            half_then_fail,
+        );
         assert!(copy.is_err());
         assert!(names(&dir).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -756,8 +844,14 @@ mod tests {
         std::os::unix::fs::symlink(&real, &file).unwrap();
 
         save_to(&file, &Settings::default()).unwrap();
-        assert!(std::fs::symlink_metadata(&file).unwrap().file_type().is_symlink());
-        assert_eq!(shown(&parse(&std::fs::read(&real).unwrap()).unwrap()), defaults());
+        assert!(std::fs::symlink_metadata(&file)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            shown(&parse(&std::fs::read(&real).unwrap()).unwrap()),
+            defaults()
+        );
         assert_eq!(names(&dir), ["dotfiles-settings.json", "settings.json"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -776,7 +870,12 @@ mod tests {
         let (dir, file) = scratch("keys");
         save_to(&file, &Settings::default()).unwrap();
         let written: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-        let keys: Vec<&str> = written.as_object().unwrap().keys().map(String::as_str).collect();
+        let keys: Vec<&str> = written
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(
             keys,
             [
@@ -784,6 +883,7 @@ mod tests {
                 "soundVolume",
                 "autoCloseInterval",
                 "openOnHover",
+                "alwaysCompact",
                 "absenceInterval",
                 "activeIntegrations",
                 "mainPill",
@@ -804,6 +904,7 @@ mod tests {
                 "pillColors",
                 "language",
                 "desktopMochi",
+                "vpsConfig",
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);

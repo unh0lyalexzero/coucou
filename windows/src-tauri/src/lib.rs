@@ -30,6 +30,7 @@ mod shortcuts;
 mod sounds;
 mod spotify;
 mod tray;
+mod vps;
 #[cfg(windows)]
 mod webview_drop;
 
@@ -496,6 +497,20 @@ fn secret_present(key: String) -> bool {
     secrets::present(&key)
 }
 
+fn integration_for_secret(key: &str) -> Option<&'static str> {
+    match key {
+        "paypal-client-id" | "paypal-client-secret" => Some("integration_paypal"),
+        "stripe-api-key" => Some("integration_stripe"),
+        "github-token" => Some("integration_github"),
+        "vercel-token" => Some("integration_vercel"),
+        "n8n-url" | "n8n-api-key" => Some("integration_n8n"),
+        "resend-api-key" => Some("integration_resend"),
+        "notion-api-key" => Some("integration_notion"),
+        "calcom-api-key" => Some("integration_calcom"),
+        _ => None,
+    }
+}
+
 #[tauri::command]
 fn secret_set(app: AppHandle, key: String, value: String) -> Result<(), String> {
     // Bound to its server's address: only local_set_key may store it.
@@ -509,6 +524,13 @@ fn secret_set(app: AppHandle, key: String, value: String) -> Result<(), String> 
             integrations::github_token_changed(&app);
         }
     }
+    let _ = app.emit_to(island::WINDOW_LABEL, "secrets-changed", &key);
+    if let Some(id) = integration_for_secret(&key) {
+        let app_clone = app.clone();
+        tauri::async_runtime::spawn(async move {
+            integrations::poll_once(app_clone, id).await;
+        });
+    }
     Ok(())
 }
 
@@ -519,6 +541,7 @@ fn secret_clear(app: AppHandle, key: String) -> Result<(), String> {
     if had {
         integrations::github_token_changed(&app);
     }
+    let _ = app.emit_to(island::WINDOW_LABEL, "secrets-changed", &key);
     Ok(())
 }
 
@@ -534,6 +557,43 @@ fn open_n8n() {
 #[tauri::command]
 async fn refresh_integration(app: AppHandle, id: String) {
     integrations::poll_once(app, &id).await;
+}
+
+#[tauri::command]
+async fn paypal_refresh(app: AppHandle) {
+    integrations::poll_once(app, "integration_paypal").await;
+}
+
+#[tauri::command]
+async fn vps_connect(
+    app: AppHandle,
+    shared: State<'_, Shared>,
+    state: State<'_, vps::VpsState>,
+) -> Result<vps::VpsStatus, String> {
+    let cfg = shared.settings.lock().unwrap().vps_config.clone();
+    vps::connect(app, state, cfg).await
+}
+
+#[tauri::command]
+async fn vps_disconnect(state: State<'_, vps::VpsState>) -> Result<(), String> {
+    vps::disconnect(state).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn vps_write(state: State<'_, vps::VpsState>, data: String) -> Result<(), String> {
+    vps::write(state, data).await
+}
+
+#[tauri::command]
+fn vps_resize(_cols: u16, _rows: u16) {
+    // Placeholder for a future ConPTY resize. The current OpenSSH stdio stream
+    // keeps the same front-end command contract.
+}
+
+#[tauri::command]
+fn vps_status(state: State<'_, vps::VpsState>) -> vps::VpsStatus {
+    vps::status(state)
 }
 
 /// The GitHub card was opened: refetch its `section` ("pulse" or "activity")
@@ -665,6 +725,7 @@ pub fn run() {
         })
         .manage(Pending::default())
         .manage(Chat::default())
+        .manage(vps::VpsState::default())
         .manage(shortcuts::Registry::default())
         .manage(recap::load())
         .invoke_handler(tauri::generate_handler![
@@ -707,6 +768,12 @@ pub fn run() {
             secret_set,
             secret_clear,
             refresh_integration,
+            paypal_refresh,
+            vps_connect,
+            vps_disconnect,
+            vps_write,
+            vps_resize,
+            vps_status,
             github_refresh,
             open_n8n,
             open_settings_window,

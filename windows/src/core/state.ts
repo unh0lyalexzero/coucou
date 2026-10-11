@@ -103,6 +103,8 @@ export interface Settings {
   autoCloseInterval: number;
   /** Hovering the island opens it all the way (off: hovering only peeks). */
   openOnHover: boolean;
+  /** Keep compact visible instead of shrinking to the invisible wake strip. */
+  alwaysCompact: boolean;
   absenceInterval: number;
   /** Declared pills next to the main one (at most 4), in the order they were added. */
   activeIntegrations: string[];
@@ -151,6 +153,14 @@ export interface Settings {
     onDesktop: boolean;
     spot: { x: number; y: number; space: string } | null;
   };
+  vpsConfig: {
+    host: string;
+    user: string;
+    port: number;
+    keyPath?: string;
+    alias?: string;
+    shell?: string;
+  };
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -158,6 +168,7 @@ export const DEFAULT_SETTINGS: Settings = {
   soundVolume: 0.12,
   autoCloseInterval: 15,
   openOnHover: false,
+  alwaysCompact: true,
   absenceInterval: 180,
   activeIntegrations: [
     "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
@@ -179,6 +190,14 @@ export const DEFAULT_SETTINGS: Settings = {
   mochiOutfit: DEFAULT_OUTFIT,
   pillColors: {},
   language: "",
+  vpsConfig: {
+    host: "100.96.41.47",
+    user: "alex",
+    port: 22,
+    keyPath: "~/.ssh/id_ed25519_codex",
+    alias: "srv",
+    shell: "",
+  },
 };
 
 type Listener = () => void;
@@ -230,6 +249,7 @@ class AppState {
   planDetailIsCodex = false;
   /** Per-pill file diffs, in order of reception. Steps carry their ids. */
   sessionDiffs = new Map<string, FileDiff[]>();
+  activeDiffId: number | null = null;
   private sessionDiffTimers = new Map<string, number>();
   /** Never reset, so an id can never point at a newer diff than the one tapped. */
   private nextDiffId = 0;

@@ -157,6 +157,17 @@ test("forceHidden hides from any state", () => {
   assert.equal(fsm.state, "hidden");
 });
 
+test("always compact never lets the compact island hide", () => {
+  fsm.alwaysCompact = true;
+  fsm.reveal();
+  assert.equal(fsm.state, "petit");
+  seconds(600);
+  assert.equal(fsm.state, "petit");
+  fsm.forceHome();
+  fsm.forceHidden();
+  assert.equal(fsm.state, "petit");
+});
+
 test("a transition to the current state is not reported", () => {
   fsm.forceHome();
   fsm.forceHome();
