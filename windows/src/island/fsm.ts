@@ -34,6 +34,8 @@ export class IslandStateMachine {
    * General → Open on hover, off by default), as IslandStateMachine.openOnHover.
    */
   openOnHover = false;
+  /** When on, petit is the minimum state: no transition reaches hidden. */
+  alwaysCompact = false;
   /** Grace period after the pointer leaves a hover-opened island, seconds. */
   hoverCloseDelay = 0.6;
   /** Open because of a hover, until the user clicks inside it. */
@@ -151,7 +153,7 @@ export class IslandStateMachine {
   forceHidden() {
     this.byHover = false;
     this.cancelTimers();
-    this.transition("hidden");
+    this.transition(this.alwaysCompact ? "petit" : "hidden");
   }
 
   // ── Timers ──────────────────────────────────────────────────────────────────
@@ -161,6 +163,7 @@ export class IslandStateMachine {
     // A card folded away while it waits for an answer keeps the compact island
     // on screen, so it can be reopened (isHeldOpen on macOS).
     if (this.pinned) return;
+    if (this.alwaysCompact) return;
     this.petitHide = window.setTimeout(() => {
       this.petitHide = null;
       if (this.state === "petit" && !this.pinned) this.transition("hidden");

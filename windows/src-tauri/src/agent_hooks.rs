@@ -57,6 +57,9 @@ pub fn status() -> HashMap<String, bool> {
     out.insert("integration_claude".to_string(), claude);
     for agent in crate::agents::list() {
         out.insert(format!("agent_{}", agent.id), agent.installed);
+        if agent.id == "antigravity" {
+            out.insert("agent_antigravity-vscode".to_string(), agent.installed);
+        }
     }
     // The Cursor pill also carries Claude Code run in Cursor's terminal, which
     // Claude Code's own hooks report.

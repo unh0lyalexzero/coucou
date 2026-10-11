@@ -23,6 +23,193 @@
    "ru": "(сохранён)",
    "id": "(tersimpan)"
   },
+  "Always visible": {
+   "zh-Hans": "始终可见",
+   "hi": "हमेशा दिखे",
+   "es": "Siempre visible",
+   "ar": "مرئي دائمًا",
+   "fr": "Toujours visible",
+   "bn": "সবসময় দৃশ্যমান",
+   "pt-BR": "Sempre visível",
+   "ru": "Всегда видно",
+   "id": "Selalu terlihat"
+  },
+  "Client ID": {
+   "zh-Hans": "客户端 ID",
+   "hi": "क्लाइंट ID",
+   "es": "ID de cliente",
+   "ar": "معرّف العميل",
+   "fr": "ID client",
+   "bn": "ক্লায়েন্ট ID",
+   "pt-BR": "ID do cliente",
+   "ru": "ID клиента",
+   "id": "ID klien"
+  },
+  "Client lacks balance reporting access": {
+   "zh-Hans": "客户端缺少余额报告访问权限",
+   "hi": "क्लाइंट के पास बैलेंस रिपोर्टिंग एक्सेस नहीं है",
+   "es": "El cliente no tiene acceso a reportes de balance",
+   "ar": "لا يملك العميل وصولًا إلى تقارير الرصيد",
+   "fr": "Le client n'a pas accès aux rapports de solde",
+   "bn": "ক্লায়েন্টের ব্যালেন্স রিপোর্টিং অ্যাক্সেস নেই",
+   "pt-BR": "O cliente não tem acesso aos relatórios de saldo",
+   "ru": "У клиента нет доступа к отчетам о балансе",
+   "id": "Klien tidak punya akses laporan saldo"
+  },
+  "Client lacks reporting access": {
+   "zh-Hans": "客户端缺少报告访问权限",
+   "hi": "क्लाइंट के पास रिपोर्टिंग एक्सेस नहीं है",
+   "es": "El cliente no tiene acceso a reportes",
+   "ar": "لا يملك العميل وصولًا إلى التقارير",
+   "fr": "Le client n'a pas accès aux rapports",
+   "bn": "ক্লায়েন্টের রিপোর্টিং অ্যাক্সেস নেই",
+   "pt-BR": "O cliente não tem acesso a relatórios",
+   "ru": "У клиента нет доступа к отчетам",
+   "id": "Klien tidak punya akses laporan"
+  },
+  "Client lacks transaction reporting access": {
+   "zh-Hans": "客户端缺少交易报告访问权限",
+   "hi": "क्लाइंट के पास लेन-देन रिपोर्टिंग एक्सेस नहीं है",
+   "es": "El cliente no tiene acceso a reportes de transacciones",
+   "ar": "لا يملك العميل وصولًا إلى تقارير المعاملات",
+   "fr": "Le client n'a pas accès aux rapports de transactions",
+   "bn": "ক্লায়েন্টের লেনদেন রিপোর্টিং অ্যাক্সেস নেই",
+   "pt-BR": "O cliente não tem acesso aos relatórios de transações",
+   "ru": "У клиента нет доступа к отчетам о транзакциях",
+   "id": "Klien tidak punya akses laporan transaksi"
+  },
+  "Client secret": {
+   "zh-Hans": "客户端密钥",
+   "hi": "क्लाइंट सीक्रेट",
+   "es": "Secreto de cliente",
+   "ar": "سر العميل",
+   "fr": "Secret client",
+   "bn": "ক্লায়েন্ট সিক্রেট",
+   "pt-BR": "Segredo do cliente",
+   "ru": "Секрет клиента",
+   "id": "Rahasia klien"
+  },
+  "Disconnected": {
+   "zh-Hans": "已断开",
+   "hi": "डिस्कनेक्ट",
+   "es": "Desconectado",
+   "ar": "غير متصل",
+   "fr": "Déconnecté",
+   "bn": "সংযোগ বিচ্ছিন্ন",
+   "pt-BR": "Desconectado",
+   "ru": "Отключено",
+   "id": "Terputus"
+  },
+  "Keeps the compact notch visible instead of hiding it as an invisible wake strip.": {
+   "zh-Hans": "保持紧凑 notch 可见，而不是隐藏成不可见的唤醒条。",
+   "hi": "कॉम्पैक्ट notch को अदृश्य wake strip की तरह छिपाने के बजाय दिखाए रखता है।",
+   "es": "Mantiene la notch compacta visible en vez de ocultarla como una tira invisible.",
+   "ar": "يبقي النتوء المصغر مرئيًا بدل إخفائه كشريط إيقاظ غير مرئي.",
+   "fr": "Garde le notch compact visible au lieu de le masquer en bande de réveil invisible.",
+   "bn": "কমপ্যাক্ট notch দৃশ্যমান রাখে, অদৃশ্য wake strip হিসেবে লুকায় না।",
+   "pt-BR": "Mantém o notch compacto visível em vez de escondê-lo como uma faixa invisível.",
+   "ru": "Оставляет компактный notch видимым, а не прячет его в невидимую полоску.",
+   "id": "Menjaga notch ringkas tetap terlihat, bukan disembunyikan sebagai strip bangun tak terlihat."
+  },
+  "No output yet.": {
+   "zh-Hans": "还没有输出。",
+   "hi": "अभी कोई आउटपुट नहीं।",
+   "es": "Todavía no hay salida.",
+   "ar": "لا يوجد خرج بعد.",
+   "fr": "Aucune sortie pour l'instant.",
+   "bn": "এখনও কোনো আউটপুট নেই।",
+   "pt-BR": "Ainda sem saída.",
+   "ru": "Пока нет вывода.",
+   "id": "Belum ada output."
+  },
+  "No recent payments": {
+   "zh-Hans": "没有最近付款",
+   "hi": "हाल के भुगतान नहीं",
+   "es": "No hay pagos recientes",
+   "ar": "لا توجد مدفوعات حديثة",
+   "fr": "Aucun paiement récent",
+   "bn": "সাম্প্রতিক পেমেন্ট নেই",
+   "pt-BR": "Sem pagamentos recentes",
+   "ru": "Нет недавних платежей",
+   "id": "Tidak ada pembayaran terbaru"
+  },
+  "PayPal did not return an access token": {
+   "zh-Hans": "PayPal 未返回访问令牌",
+   "hi": "PayPal ने access token नहीं लौटाया",
+   "es": "PayPal no devolvió un token de acceso",
+   "ar": "لم يرجع PayPal رمز وصول",
+   "fr": "PayPal n'a pas renvoyé de jeton d'accès",
+   "bn": "PayPal access token ফেরত দেয়নি",
+   "pt-BR": "O PayPal não retornou um token de acesso",
+   "ru": "PayPal не вернул токен доступа",
+   "id": "PayPal tidak mengembalikan token akses"
+  },
+  "Read-only REST app with reporting balances and transaction search access.": {
+   "zh-Hans": "只读 REST 应用，需要余额报告和交易搜索访问权限。",
+   "hi": "रीड-ओनली REST ऐप जिसमें बैलेंस रिपोर्टिंग और लेन-देन खोज एक्सेस हो।",
+   "es": "App REST de solo lectura con acceso a reportes de balance y búsqueda de transacciones.",
+   "ar": "تطبيق REST للقراءة فقط مع وصول إلى تقارير الرصيد وبحث المعاملات.",
+   "fr": "App REST en lecture seule avec accès aux soldes et à la recherche de transactions.",
+   "bn": "ব্যালেন্স রিপোর্টিং ও লেনদেন সার্চ অ্যাক্সেসসহ read-only REST app।",
+   "pt-BR": "App REST somente leitura com acesso a saldos e busca de transações.",
+   "ru": "REST-приложение только для чтения с доступом к балансам и поиску транзакций.",
+   "id": "Aplikasi REST hanya-baca dengan akses saldo pelaporan dan pencarian transaksi."
+  },
+  "Reconnect": {
+   "zh-Hans": "重新连接",
+   "hi": "फिर से कनेक्ट करें",
+   "es": "Reconectar",
+   "ar": "إعادة الاتصال",
+   "fr": "Reconnecter",
+   "bn": "পুনরায় সংযোগ",
+   "pt-BR": "Reconectar",
+   "ru": "Переподключить",
+   "id": "Sambungkan ulang"
+  },
+  "SSH key": {
+   "zh-Hans": "SSH 密钥",
+   "hi": "SSH कुंजी",
+   "es": "Clave SSH",
+   "ar": "مفتاح SSH",
+   "fr": "Clé SSH",
+   "bn": "SSH কী",
+   "pt-BR": "Chave SSH",
+   "ru": "SSH-ключ",
+   "id": "Kunci SSH"
+  },
+  "Terminal": {
+   "zh-Hans": "终端",
+   "hi": "टर्मिनल",
+   "es": "Terminal",
+   "ar": "الطرفية",
+   "fr": "Terminal",
+   "bn": "টার্মিনাল",
+   "pt-BR": "Terminal",
+   "ru": "Терминал",
+   "id": "Terminal"
+  },
+  "Test connection": {
+   "zh-Hans": "测试连接",
+   "hi": "कनेक्शन जांचें",
+   "es": "Probar conexión",
+   "ar": "اختبار الاتصال",
+   "fr": "Tester la connexion",
+   "bn": "সংযোগ পরীক্ষা",
+   "pt-BR": "Testar conexão",
+   "ru": "Проверить подключение",
+   "id": "Uji koneksi"
+  },
+  "Wallet": {
+   "zh-Hans": "钱包",
+   "hi": "वॉलेट",
+   "es": "Cartera",
+   "ar": "المحفظة",
+   "fr": "Portefeuille",
+   "bn": "ওয়ালেট",
+   "pt-BR": "Carteira",
+   "ru": "Кошелек",
+   "id": "Dompet"
+  },
   "+ subagent": {
    "zh-Hans": "+ 子代理",
    "hi": "+ सब-एजेंट",
@@ -33,17 +220,6 @@
    "pt-BR": "+ subagente",
    "ru": "+ субагент",
    "id": "+ subagen"
-  },
-  "A hook group named \"coucou\" that Coucou did not write is already there — Coucou has not touched it.": {
-   "zh-Hans": "已存在一个并非 Coucou 写入的名为“coucou”的 hook 组 — Coucou 没有修改它。",
-   "hi": "“coucou” नाम का एक hook समूह पहले से है जिसे Coucou ने नहीं लिखा — Coucou ने इसे नहीं छुआ।",
-   "es": "Ya existe un grupo de hooks llamado «coucou» que no escribió Coucou — Coucou no lo ha tocado.",
-   "ar": "توجد بالفعل مجموعة hooks باسم «coucou» لم يكتبها Coucou — لم يمسّها Coucou.",
-   "fr": "Un groupe de hooks nommé « coucou » que Coucou n'a pas écrit existe déjà — Coucou n'y a pas touché.",
-   "bn": "“coucou” নামে একটি hook গ্রুপ আগে থেকেই আছে যা Coucou লেখেনি — Coucou এতে হাত দেয়নি।",
-   "pt-BR": "Já existe um grupo de hooks chamado “coucou” que não foi escrito pelo Coucou — o Coucou não mexeu nele.",
-   "ru": "Уже есть группа хуков «coucou», которую написал не Coucou, — Coucou её не трогал.",
-   "id": "Sudah ada grup hook bernama “coucou” yang tidak ditulis Coucou — Coucou tidak menyentuhnya."
   },
   "AI for the chat": {
    "zh-Hans": "聊天用的 AI",

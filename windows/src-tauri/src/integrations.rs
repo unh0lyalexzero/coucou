@@ -34,7 +34,6 @@ pub struct IntegrationUpdate {
     pub error: Option<String>,
     pub event: Option<IntegrationEvent>,
 }
-
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationEvent {
@@ -64,9 +63,11 @@ pub fn set_paused(on: bool) {
 
 /// Spawns every poller with the macOS delays and intervals.
 pub fn start(app: AppHandle) {
+    spawn(app.clone(), "integration_vps", 2, 15, crate::vps::ensure_connected);
     spawn(app.clone(), "integration_n8n", 3, 15, poll_n8n);
     spawn(app.clone(), "integration_vercel", 5, 30, poll_vercel);
     spawn(app.clone(), "integration_stripe", 6, 30, poll_stripe);
+    spawn(app.clone(), "integration_paypal", 7, 300, poll_paypal);
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
     spawn(app.clone(), "integration_github", 7, 300, poll_github);
     spawn_github_loops(app.clone());
@@ -109,7 +110,9 @@ where
 /// One-shot refresh from the Refresh buttons in the island.
 pub async fn poll_once(app: AppHandle, id: &str) {
     match id {
+        "integration_vps" => crate::vps::ensure_connected(app).await,
         "integration_stripe" => poll_stripe(app).await,
+        "integration_paypal" => poll_paypal(app).await,
         "integration_github" => {
             wake_github_pulse();
             github_refresh_if_stale("activity");
@@ -269,6 +272,294 @@ async fn poll_stripe(app: AppHandle) {
         error: None,
         event,
     });
+}
+
+// ── PayPal ───────────────────────────────────────────────────────────────────
+
+async fn paypal_token(http: &reqwest::Client, base: &str, id: &str, secret: &str) -> Result<String, String> {
+    let auth = format!("Basic {}", crate::claude::base64_for(format!("{id}:{secret}").as_bytes()));
+    let response = http
+        .post(format!("{base}/v1/oauth2/token"))
+        .header("Authorization", auth)
+        .header("Accept", "application/json")
+        .form(&[("grant_type", "client_credentials"), ("ignoreCache", "true")])
+        .send()
+        .await
+        .map_err(|e| crate::i18n::tf("No connection: {error}", &[("error", &e.to_string())]))?;
+    if !response.status().is_success() {
+        return Err(status_error(response.status().as_u16(), &crate::i18n::t("Client lacks reporting access")));
+    }
+    let root: Value = response.json().await.unwrap_or(json!({}));
+    root.get("access_token")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| crate::i18n::t("PayPal did not return an access token"))
+}
+
+fn currency_priority(code: &str) -> u8 {
+    match code.to_ascii_uppercase().as_str() {
+        "USD" => 5,
+        "EUR" => 4,
+        "GBP" => 3,
+        "CAD" | "MXN" => 2,
+        "AUD" => 1,
+        _ => 0,
+    }
+}
+
+fn parse_paypal_balances(root: &Value, tx_root: Option<&Value>) -> Vec<Value> {
+    let mut rows: Vec<(bool, bool, u8, Value)> = root
+        .get("balances")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|b| {
+                    let total_obj = b.get("total_balance");
+                    let avail_obj = b.get("available_balance");
+                    let currency = b
+                        .get("currency")
+                        .or_else(|| b.get("currency_code"))
+                        .or_else(|| total_obj.and_then(|m| m.get("currency_code")))
+                        .or_else(|| avail_obj.and_then(|m| m.get("currency_code")))
+                        .and_then(Value::as_str)?;
+                    let total_val = total_obj.and_then(|m| m.get("value")).and_then(Value::as_str);
+                    let avail_val = avail_obj.and_then(|m| m.get("value")).and_then(Value::as_str);
+                    let total_num = total_val.and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+                    let avail_num = avail_val.and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+                    let amount = if total_num.abs() > 0.0001 {
+                        total_val.unwrap_or("0.00")
+                    } else if avail_num.abs() > 0.0001 {
+                        avail_val.unwrap_or("0.00")
+                    } else {
+                        total_val.or(avail_val).unwrap_or("0.00")
+                    };
+                    let non_zero = amount.parse::<f64>().map(|v| v.abs() > 0.0001).unwrap_or(false);
+                    let primary = b.get("primary").and_then(Value::as_bool).unwrap_or(false);
+                    let prio = currency_priority(currency);
+                    Some((
+                        non_zero,
+                        primary,
+                        prio,
+                        json!({
+                            "currency": currency,
+                            "amount": amount,
+                            "available": avail_val.unwrap_or(amount),
+                            "primary": primary,
+                        }),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    rows.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.2.cmp(&a.2))
+    });
+    let mut out: Vec<Value> = rows.into_iter().map(|(_, _, _, v)| v).collect();
+
+    let has_non_zero = out
+        .iter()
+        .any(|r| r.get("amount").and_then(Value::as_str).and_then(|s| s.parse::<f64>().ok()).map(|v| v.abs() > 0.0001).unwrap_or(false));
+
+    if !has_non_zero {
+        if let Some(tx_details) = tx_root.and_then(|r| r.get("transaction_details")).and_then(Value::as_array) {
+            if let Some(last_tx) = tx_details.iter().rev().find_map(|row| {
+                let ti = row.get("transaction_info")?;
+                let bal = ti.get("ending_balance").or_else(|| ti.get("available_balance"))?;
+                let val = bal.get("value").and_then(Value::as_str)?;
+                let cur = bal.get("currency_code").and_then(Value::as_str).unwrap_or("USD");
+                Some(json!({
+                    "currency": cur,
+                    "amount": val,
+                    "available": val,
+                    "primary": true,
+                }))
+            }) {
+                if out.is_empty() {
+                    out.push(last_tx);
+                } else if last_tx.get("amount").and_then(Value::as_str).and_then(|s| s.parse::<f64>().ok()).map(|v| v.abs() > 0.0001).unwrap_or(false) {
+                    out.insert(0, last_tx);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+async fn poll_paypal(app: AppHandle) {
+    let (Some(raw_id), Some(raw_secret)) = (
+        secrets::get("paypal-client-id"),
+        secrets::get("paypal-client-secret"),
+    ) else {
+        return;
+    };
+    let client_id = raw_id.trim();
+    let secret = raw_secret.trim();
+    if client_id.is_empty() || secret.is_empty() {
+        return;
+    }
+    let http = client();
+    let mut base = "https://api-m.paypal.com";
+    let mut env = "live";
+    let token = match paypal_token(&http, base, client_id, secret).await {
+        Ok(token) => token,
+        Err(_) => {
+            base = "https://api-m.sandbox.paypal.com";
+            env = "sandbox";
+            match paypal_token(&http, base, client_id, secret).await {
+                Ok(token) => token,
+                Err(error) => {
+                    log::line(format!("paypal oauth failed: {error}"));
+                    emit(&app, IntegrationUpdate { id: "integration_paypal", data: json!({}), error: Some(error), event: None });
+                    return;
+                }
+            }
+        }
+    };
+    let auth = format!("Bearer {token}");
+
+    let balances = http
+        .get(format!("{base}/v1/reporting/balances?currency_code=ALL"))
+        .header("Authorization", &auth)
+        .header("Accept", "application/json")
+        .send()
+        .await;
+    let mut balance_root = json!({});
+    let mut balance_err = None;
+    let mut balance_status = 0u16;
+    match balances {
+        Ok(r) if r.status().is_success() => {
+            balance_status = 200;
+            balance_root = r.json().await.unwrap_or(json!({}));
+        }
+        Ok(r) => {
+            let code = r.status().as_u16();
+            balance_status = code;
+            if let Ok(r2) = http
+                .get(format!("{base}/v1/reporting/balances"))
+                .header("Authorization", &auth)
+                .header("Accept", "application/json")
+                .send()
+                .await
+            {
+                balance_status = r2.status().as_u16();
+                if r2.status().is_success() {
+                    balance_root = r2.json().await.unwrap_or(json!({}));
+                } else {
+                    balance_err = Some(status_error(r2.status().as_u16(), &crate::i18n::t("Client lacks balance reporting access")));
+                }
+            } else {
+                balance_err = Some(status_error(code, &crate::i18n::t("Client lacks balance reporting access")));
+            }
+        }
+        Err(e) => balance_err = Some(crate::i18n::tf("No connection: {error}", &[("error", &e.to_string())])),
+    }
+
+    let now = chrono_like_now();
+    let from = now.saturating_sub(30 * 24 * 60 * 60);
+    let tx_url = format!(
+        "{base}/v1/reporting/transactions?start_date={}&end_date={}&fields=all&balance_affecting_records_only=N&page_size=20",
+        iso_time(from),
+        iso_time(now)
+    );
+    let tx_response = http
+        .get(tx_url)
+        .header("Authorization", &auth)
+        .header("Accept", "application/json")
+        .send()
+        .await;
+    let mut tx_ok = false;
+    let mut tx_root_opt: Option<Value> = None;
+    let payments: Vec<Value> = match tx_response {
+        Ok(r) if r.status().is_success() => {
+            tx_ok = true;
+            let root: Value = r.json().await.unwrap_or(json!({}));
+            let list = root.get("transaction_details")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items.iter().rev().filter_map(|row| {
+                        let tx = row.get("transaction_info")?;
+                        let id = tx.get("transaction_id").and_then(Value::as_str)?;
+                        let amount = tx.get("transaction_amount")?;
+                        Some(json!({
+                            "id": id,
+                            "amount": amount.get("value").and_then(Value::as_str).unwrap_or("0"),
+                            "currency": amount.get("currency_code").and_then(Value::as_str).unwrap_or("USD"),
+                            "description": tx.get("transaction_subject").and_then(Value::as_str)
+                                .or_else(|| tx.get("paypal_reference_id").and_then(Value::as_str))
+                                .or_else(|| tx.get("transaction_event_code").and_then(Value::as_str))
+                                .unwrap_or("Payment"),
+                            "createdAt": tx.get("transaction_initiation_date").and_then(Value::as_str).unwrap_or(""),
+                            "status": tx.get("transaction_status").and_then(Value::as_str).unwrap_or("S"),
+                        }))
+                    }).take(5).collect()
+                })
+                .unwrap_or_default();
+            tx_root_opt = Some(root);
+            list
+        }
+        _ => Vec::new(),
+    };
+
+    let balance_rows = parse_paypal_balances(&balance_root, tx_root_opt.as_ref());
+    let balance_pending = balance_rows.is_empty() && tx_ok && balance_status == 404;
+    if balance_pending {
+        balance_err = None;
+    }
+    log::line(format!(
+        "paypal poll env={env} balances={} first={:?} pending={balance_pending} err={:?}",
+        balance_rows.len(),
+        balance_rows.first().and_then(|b| b.get("amount")).and_then(Value::as_str),
+        balance_err
+    ));
+
+    let newest = payments.first().and_then(|p| p.get("id")).and_then(Value::as_str).unwrap_or("");
+    let event = if !newest.is_empty() && is_new("paypal", newest) {
+        Some(IntegrationEvent {
+            success: true,
+            label: payments[0].get("description").and_then(Value::as_str).unwrap_or("Payment").to_string(),
+            detail: None,
+        })
+    } else {
+        None
+    };
+
+    let last_refresh_time = balance_root
+        .get("last_refresh_time")
+        .or_else(|| balance_root.get("as_of_time"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    emit(&app, IntegrationUpdate {
+        id: "integration_paypal",
+        data: json!({
+            "balances": balance_rows,
+            "payments": payments,
+            "environment": env,
+            "balanceError": balance_err,
+            "balancePending": balance_pending,
+            "lastRefreshTime": last_refresh_time,
+        }),
+        error: None,
+        event,
+    });
+}
+
+fn chrono_like_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn iso_time(secs: u64) -> String {
+    chrono::DateTime::from_timestamp(secs as i64, 0)
+        .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".into())
 }
 
 // ── GitHub ────────────────────────────────────────────────────────────────────
@@ -1020,5 +1311,43 @@ mod tests {
         assert_eq!(data["totalRepos"], json!(12));
         assert_eq!(data["activity"], json!({ "total": 5, "weeks": [], "fetchedAt": 9 }));
         assert!(data.get("pulse").is_none());
+    }
+
+    #[test]
+    fn parse_paypal_balances_prioritizes_nonzero_and_primary_and_falls_back_to_tx() {
+        let root = json!({
+            "balances": [
+                {
+                    "currency": "EUR",
+                    "primary": false,
+                    "total_balance": { "currency_code": "EUR", "value": "0.00" },
+                    "available_balance": { "currency_code": "EUR", "value": "0.00" }
+                },
+                {
+                    "currency": "USD",
+                    "primary": true,
+                    "total_balance": { "currency_code": "USD", "value": "1.56" },
+                    "available_balance": { "currency_code": "USD", "value": "1.56" }
+                }
+            ]
+        });
+        let rows = parse_paypal_balances(&root, None);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["currency"], json!("USD"));
+        assert_eq!(rows[0]["amount"], json!("1.56"));
+
+        let empty_root = json!({});
+        let tx_root = json!({
+            "transaction_details": [
+                {
+                    "transaction_info": {
+                        "ending_balance": { "currency_code": "USD", "value": "1.56" }
+                    }
+                }
+            ]
+        });
+        let fallback_rows = parse_paypal_balances(&empty_root, Some(&tx_root));
+        assert_eq!(fallback_rows.len(), 1);
+        assert_eq!(fallback_rows[0]["amount"], json!("1.56"));
     }
 }

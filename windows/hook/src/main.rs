@@ -23,7 +23,7 @@
 //! see statusline.rs): it passes the plan limits on and runs the status line the
 //! user had before, so that keeps working.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -50,9 +50,30 @@ mod statusline;
 
 /// The live diff needs the whole text of a file edit, once it has happened:
 /// PostToolUse of these tools keeps its edit strings far longer than the rest.
-const DIFF_TOOLS: &[&str] = &["Edit", "MultiEdit", "Write"];
+const DIFF_TOOLS: &[&str] = &[
+    "Edit",
+    "MultiEdit",
+    "Write",
+    "replace_file_content",
+    "multi_replace_file_content",
+    "write_to_file",
+    "edit_file",
+    "write_file",
+    "replace",
+    "apply_patch",
+];
+/// Tools whose `toolCall` only arrives on `PreToolUse` (Antigravity / Gemini CLI).
+const PRE_DIFF_TOOLS: &[&str] = &[
+    "replace_file_content",
+    "multi_replace_file_content",
+    "write_to_file",
+    "edit_file",
+    "write_file",
+    "replace",
+    "apply_patch",
+];
 /// The `tool_input` keys holding the text being replaced or written.
-const DIFF_FIELDS: &[&str] = &["old_string", "new_string", "content"];
+const DIFF_FIELDS: &[&str] = &["old_string", "new_string", "content", "patch", "diff"];
 /// Per edit string. The island stops diffing at 200 KB anyway (DiffEngine).
 const MAX_DIFF_FIELD_LEN: usize = 256 * 1024;
 /// For all edit strings of one event together, so the line stays well under the
@@ -185,6 +206,13 @@ fn prepare(raw: &[u8], args: &Args, env: &dyn Fn(&str) -> Option<String>, cwd: &
         map.insert("cwd".into(), Value::String(cwd.to_string()));
     }
 
+    let effective_cwd = map
+        .get("cwd")
+        .and_then(Value::as_str)
+        .unwrap_or(cwd)
+        .to_string();
+    attach_code_context(map, &effective_cwd);
+
     add_terminal_context(map, env);
 
     // Kept whole: what goes back to Claude Code must be its own input, not the
@@ -194,12 +222,107 @@ fn prepare(raw: &[u8], args: &Args, env: &dyn Fn(&str) -> Option<String>, cwd: &
         .flatten();
 
     // Every string is capped, except the edit text of a finished Edit /
-    // MultiEdit / Write, which the live diff needs whole (within its own limits).
+    // MultiEdit / Write (or Antigravity's PreToolUse edits), which the live diff
+    // needs whole (within its own limits).
     truncate_payload(&mut payload, &name);
 
     let mut line = payload.to_string();
     line.push('\n');
     Some(Event { line, name, question })
+}
+
+/// Enriches file read/edit tools with a short snippet (`code_preview`) or
+/// `start_line` from disk when the agent payload did not include them.
+fn attach_code_context(map: &mut Map<String, Value>, cwd: &str) {
+    let Some(tool) = map.get("tool_name").and_then(Value::as_str).map(str::to_string) else {
+        return;
+    };
+    let Some(input) = map.get_mut("tool_input").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(raw_path) = input
+        .get("file_path")
+        .or_else(|| input.get("path"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+    else {
+        return;
+    };
+
+    let path = {
+        let p = std::path::Path::new(&raw_path);
+        if p.is_absolute() || cwd.is_empty() {
+            p.to_path_buf()
+        } else {
+            std::path::Path::new(cwd).join(p)
+        }
+    };
+
+    if matches!(tool.as_str(), "Read" | "view_file" | "read_file") {
+        if input.contains_key("code_preview") {
+            return;
+        }
+        let start_line = input
+            .get("start_line")
+            .or_else(|| input.get("offset"))
+            .and_then(Value::as_u64)
+            .map(|n| n.max(1) as usize)
+            .unwrap_or(1);
+
+        let Ok(file) = std::fs::File::open(&path) else { return };
+        let reader = BufReader::new(file);
+        let mut lines = Vec::new();
+        let mut actual_start = start_line;
+        for (idx, line) in reader.lines().enumerate() {
+            let line_no = idx + 1;
+            if line_no < start_line {
+                continue;
+            }
+            let Ok(text) = line else { break };
+            if lines.is_empty() && start_line == 1 && text.trim().is_empty() && line_no < 10 {
+                actual_start = line_no + 1;
+                continue;
+            }
+            lines.push(text);
+            if lines.len() >= 45 {
+                break;
+            }
+        }
+        if !lines.is_empty() {
+            let mut snippet = lines.join("\n");
+            cut(&mut snippet, 3200);
+            input.insert("code_preview".into(), Value::String(snippet));
+            input
+                .entry("start_line")
+                .or_insert_with(|| Value::Number(actual_start.into()));
+        }
+        return;
+    }
+
+    // For Edit tools without an explicit start_line, locate old_string/new_string in the file
+    // so the island can display accurate 1-based line numbers.
+    if DIFF_TOOLS.contains(&tool.as_str()) && !input.contains_key("start_line") {
+        let needle = input
+            .get("old_string")
+            .or_else(|| input.get("new_string"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        let Some(needle) = needle else { return };
+        let Ok(meta) = std::fs::metadata(&path) else { return };
+        if meta.len() > 256 * 1024 {
+            return;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else { return };
+        let first_line = needle.lines().next().unwrap_or(needle).trim();
+        if first_line.is_empty() {
+            return;
+        }
+        if let Some(pos) = text.find(needle).or_else(|| text.find(first_line)) {
+            let line_no = text[..pos].bytes().filter(|&b| b == b'\n').count() + 1;
+            input.insert("start_line".into(), Value::Number(line_no.into()));
+        }
+    }
 }
 
 /// Which terminal the session runs in. Unlike macOS, Coucou here accepts events
@@ -243,15 +366,16 @@ fn term_editor(env: &dyn Fn(&str) -> Option<String>) -> Option<&'static str> {
 }
 
 /// Caps the strings of a payload: every field to MAX_FIELD_LEN, except the edit
-/// strings of a finished Edit / MultiEdit / Write, which the live diff needs
-/// whole. If even those had to be cut, `coucou_diff_truncated` tells the island
-/// not to show counts it cannot trust.
+/// strings of a finished Edit / MultiEdit / Write (or an Antigravity PreToolUse
+/// edit), which the live diff needs whole. If even those had to be cut,
+/// `coucou_diff_truncated` tells the island not to show counts it cannot trust.
 fn truncate_payload(payload: &mut serde_json::Value, event: &str) {
-    let keeps_diff = event == "PostToolUse"
-        && payload
-            .get("tool_name")
-            .and_then(|v| v.as_str())
-            .is_some_and(|tool| DIFF_TOOLS.contains(&tool));
+    let tool = payload
+        .get("tool_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let keeps_diff = (event == "PostToolUse" && DIFF_TOOLS.contains(&tool))
+        || (event == "PreToolUse" && PRE_DIFF_TOOLS.contains(&tool));
     let input = if keeps_diff {
         payload.as_object_mut().and_then(|map| map.remove("tool_input"))
     } else {
@@ -474,8 +598,11 @@ mod tests {
         let raw = format!(r#"{{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{{"old_string":"{big}","new_string":"a"}}}}"#);
         let (v, _) = run(&raw, "", "");
         assert_eq!(v["tool_input"]["old_string"].as_str().unwrap().len(), big.len());
-        // The same edit before it happens, or an agent's event renamed onto
-        // PreToolUse: the ordinary cap.
+        // Antigravity's PreToolUse replace_file_content: kept whole too.
+        let raw = format!(r#"{{"hook_event_name":"PreToolUse","toolCall":{{"name":"replace_file_content","args":{{"TargetFile":"/p/a.ts","TargetContent":"{big}","ReplacementContent":"a"}}}}}}"#);
+        let (v, _) = run(&raw, "antigravity", "PreToolUse");
+        assert_eq!(v["tool_input"]["old_string"].as_str().unwrap().len(), big.len());
+        // The same edit before it happens for Claude Code: the ordinary cap.
         let raw = format!(r#"{{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{{"old_string":"{big}"}}}}"#);
         let (v, _) = run(&raw, "", "");
         assert!(v["tool_input"]["old_string"].as_str().unwrap().len() <= MAX_FIELD_LEN + 4);

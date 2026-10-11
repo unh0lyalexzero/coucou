@@ -46,6 +46,8 @@ function cancelStopTimer(id: string): boolean {
 
 /** Events after which a pending permission request of the same session is moot. */
 const TURN_OVER = new Set(["Stop", "StopFailure", "UserPromptSubmit", "SessionEnd", "Interrupt"]);
+const SYNTHETIC_SESSIONS = /^manual-/;
+const SYNTHETIC_COMMANDS = new Set(["echo normal", "echo vscode"]);
 
 interface HookPayload {
   hook_event_name?: string;
@@ -111,20 +113,21 @@ const TOOL_LABELS: Record<string, string> = {
   view_file: N_("Reads"),
   write_to_file: N_("Writes"),
   replace_file_content: N_("Edits"),
+  multi_replace_file_content: N_("Edits"),
   read_url_content: N_("Fetches"),
   search_web: N_("Searches the web"),
+  grep_search: N_("Searches"),
+  find_by_name: N_("Searches"),
 };
 
 function stepLabel(tool: string, input: Record<string, unknown>): string {
   const label = TOOL_LABELS[tool] ? t(TOOL_LABELS[tool]) : tool;
   const str = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : null);
   const cmd = str("command");
-  if (cmd) return `${label} · ${cmd.slice(0, 40)}`;
-  const path = str("path");
+  if (cmd) return `>_ ${label} · ${cmd.slice(0, 40)}`;
+  const path = str("path") ?? str("file_path");
   if (path) return `${label} · ${lastPathComponent(path)}`;
-  const file = str("file_path");
-  if (file) return `${label} · ${lastPathComponent(file)}`;
-  const query = str("query");
+  const query = str("query") ?? str("pattern");
   if (query) return `${label} · ${query.slice(0, 40)}`;
   return label;
 }
@@ -138,7 +141,7 @@ function stepLabel(tool: string, input: Record<string, unknown>): string {
  * whatever identifying string it carries instead of falling back to its name.
  */
 const APPROVAL_FIELDS = [
-  "command", // Bash, PowerShell
+  "command", // Bash, PowerShell, run_command
   "file_path", // Write, Edit, MultiEdit, NotebookEdit
   "path", // Read, LS
   "url", // WebFetch
@@ -158,23 +161,34 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
 }
 
 /**
- * The questions of an AskUserQuestion call, if the island can show all of them
- * as options to pick from. Anything it cannot is left to the terminal.
+ * The questions of an AskUserQuestion / ask_question call, if the island can
+ * show all of them as options to pick from. Anything it cannot is left to the terminal.
  */
 function askedQuestions(tool: string, input: Record<string, unknown>): AskedQuestion[] | null {
-  if (tool !== "AskUserQuestion" || !Array.isArray(input.questions)) return null;
+  if ((tool !== "AskUserQuestion" && tool !== "ask_question") || !Array.isArray(input.questions)) {
+    return null;
+  }
   const out: AskedQuestion[] = [];
   for (const raw of input.questions as Record<string, unknown>[]) {
     const question = typeof raw?.question === "string" ? raw.question : "";
-    const options = (Array.isArray(raw?.options) ? (raw.options as Record<string, unknown>[]) : [])
-      .filter((o) => typeof o?.label === "string" && o.label)
-      .map((o) => ({
-        label: o.label as string,
-        description: typeof o.description === "string" ? o.description : "",
-      }));
+    const rawOpts = Array.isArray(raw?.options) ? raw.options : [];
+    const options = rawOpts
+      .map((o) => {
+        if (typeof o === "string") return { label: o, description: "" };
+        if (o && typeof o === "object") {
+          const obj = o as Record<string, unknown>;
+          return {
+            label: typeof obj.label === "string" ? obj.label : "",
+            description: typeof obj.description === "string" ? obj.description : "",
+          };
+        }
+        return { label: "", description: "" };
+      })
+      .filter((o) => o.label.length > 0);
     // A question cut short by the relay would be answered under the wrong text.
     if (!question || question.endsWith("…") || options.length < 2) return null;
-    out.push({ question, options, multiSelect: raw.multiSelect === true });
+    const multiSelect = raw.multiSelect === true || raw.is_multi_select === true;
+    out.push({ question, options, multiSelect });
   }
   return out.length > 0 ? out : null;
 }
@@ -209,19 +223,28 @@ function clearFinalLine(id: string) {
   if (t) t.finalLine = null;
 }
 
+/** Tracks a PreToolUse diff signature per pill so a matching PostToolUse does not duplicate it. */
+const lastPreDiffSig = new Map<string, string>();
+
 /**
- * PostToolUse of Edit / MultiEdit / Write → a diff stored for the pill and a
- * ticker step with its +N −M counts. Nothing is kept for a pill that does not
- * exist, so a stray event cannot grow memory. An edit the relay had to cut
- * would give wrong counts: the PreToolUse step ("Edits · file") stands alone.
+ * Edit / MultiEdit / Write / Read → a diff/preview stored for the pill and a
+ * ticker step with its +N −M counts. Returns true if a diff step was recorded.
  */
-function recordDiff(agentId: string, payload: HookPayload) {
-  if (payload.coucou_diff_truncated) return;
-  if (!State.tasks.some((t) => t.id === agentId)) return;
+function recordDiff(agentId: string, payload: HookPayload, isPre = false): boolean {
+  if (payload.coucou_diff_truncated) return false;
+  if (!State.tasks.some((t) => t.id === agentId)) return false;
   const diff = buildFileDiff(payload.tool_name ?? "", payload.tool_input ?? {});
-  if (!diff) return;
+  if (!diff) return false;
+  const sig = `${diff.toolKind ?? "edit"}:${diff.path}:${diff.added}:${diff.removed}`;
+  if (!isPre && lastPreDiffSig.get(agentId) === sig) {
+    lastPreDiffSig.delete(agentId);
+    return true;
+  }
+  if (isPre) lastPreDiffSig.set(agentId, sig);
+  else lastPreDiffSig.delete(agentId);
   const id = State.appendSessionDiff(agentId, diff);
   State.appendStep(agentId, makeDiffStep(fileName(diff.path), diff.added, diff.removed, id));
+  return true;
 }
 
 export function registerHookHandlers(island: Island) {
@@ -231,6 +254,11 @@ export function registerHookHandlers(island: Island) {
 }
 
 function handleHook(island: Island, payload: HookPayload) {
+  const command = typeof payload.tool_input?.command === "string" ? payload.tool_input.command.trim().toLowerCase() : "";
+  if (SYNTHETIC_SESSIONS.test(payload.session_id ?? "") || SYNTHETIC_COMMANDS.has(command)) {
+    return;
+  }
+
   // Account-wide numbers from the status line relay, not part of any session:
   // keep the latest, nothing else (no reveal, no sound), paused or not.
   if (payload.hook_event_name === "StatusLine") {
@@ -260,6 +288,20 @@ function handleHook(island: Island, payload: HookPayload) {
   const agentId = validAgent ? `agent_${validAgent}` : workspaceId;
   const isExternalAgent = validAgent !== null;
   const sessionId = payload.session_id ?? "";
+
+  // Any agent that sends a live hook event clearly has its hooks installed.
+  const existingInfo = State.integrations[agentId];
+  if (!existingInfo?.configured) {
+    State.integrations[agentId] = {
+      data: existingInfo?.data ?? {},
+      error: null,
+      loaded: true,
+      configured: true,
+    };
+  }
+  if (agentId === CLAUDE_ID && !State.settings.hooksInstalled) {
+    State.settings.hooksInstalled = true;
+  }
 
   /** Alerts force the island open; work events only reveal the compact island. */
   const surface = (view: Parameters<Island["alert"]>[0], isAlert: boolean) => {
@@ -317,6 +359,7 @@ function handleHook(island: Island, payload: HookPayload) {
     case "SessionStart":
       ensurePill();
       clearFinalLine(agentId);
+      lastPreDiffSig.delete(agentId);
       // Hermes through its gateway says where the session comes from.
       if (validAgent === "hermes" && payload.platform && payload.platform !== "cli") {
         State.appendStep(agentId, payload.platform.charAt(0).toUpperCase() + payload.platform.slice(1));
@@ -326,12 +369,19 @@ function handleHook(island: Island, payload: HookPayload) {
       break;
 
     case "UserPromptSubmit": {
+      const isAntigravity = validAgent === "antigravity" || validAgent === "antigravity-vscode";
+      const asked = payload.prompt ?? payload.message;
+      // Antigravity often fires a background PreInvocation (with no prompt) 1s after Stop
+      // to generate conversation titles/summaries; ignore it while the Stop timer is active.
+      if (isAntigravity && !asked && stopTimers.has(agentId)) {
+        break;
+      }
       ensurePill();
       supersedeStop();
       clearFinalLine(agentId);
+      lastPreDiffSig.delete(agentId);
       State.updateTask(agentId, "thinking");
       // The field is `prompt`; reading `message` meant this step was always blank.
-      const asked = payload.prompt ?? payload.message;
       if (asked) State.appendStep(agentId, asked.slice(0, 60));
       surface("overview", false);
       break;
@@ -341,19 +391,48 @@ function handleHook(island: Island, payload: HookPayload) {
       ensurePill();
       supersedeStop();
       clearFinalLine(agentId);
-      State.updateTask(agentId, "working");
       const tool = payload.tool_name ?? "Tool";
-      State.appendStep(agentId, stepLabel(tool, payload.tool_input ?? {}));
+      const input = payload.tool_input ?? {};
+
+      // When Antigravity calls `ask_question`, surface the question card in the notch!
+      const questions = askedQuestions(tool, input);
+      if (questions && !State.pendingApproval) {
+        State.beginApproval({
+          requestId: payload.request_id ?? "",
+          sessionId,
+          pillId: agentId,
+          tool: "AskUserQuestion",
+          command: questions[0].question,
+          questions,
+        });
+        State.updateTask(agentId, "question");
+        Sound.play("question");
+        island.alert("question");
+        break;
+      }
+
+      State.updateTask(agentId, "working");
+      // Antigravity only fires PreToolUse, and Read/view_file attaches code_preview on PreToolUse.
+      const isAntigravity = validAgent === "antigravity" || validAgent === "antigravity-vscode";
+      const hasCodePreview = typeof input["code_preview"] === "string";
+      if ((isAntigravity || hasCodePreview) && recordDiff(agentId, payload, true)) {
+        surface("overview", false);
+        break;
+      }
+      State.appendStep(agentId, stepLabel(tool, input));
       surface("overview", false);
       break;
     }
 
     case "PostToolUse":
       supersedeStop();
-      // The question was answered in the terminal: the card would be lying.
+      // The question was answered in the terminal/IDE: the card would be lying.
       if (
-        payload.tool_name === "AskUserQuestion" &&
+        (payload.tool_name === "AskUserQuestion" ||
+          payload.tool_name === "ask_question" ||
+          !payload.tool_name) &&
         State.pendingApproval?.questions &&
+        State.pendingApproval.pillId === agentId &&
         State.pendingApproval.sessionId === (payload.session_id ?? "")
       ) {
         if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
@@ -361,7 +440,7 @@ function handleHook(island: Island, payload: HookPayload) {
         dropPendingCard(island);
       }
       State.updateTask(agentId, "working");
-      recordDiff(agentId, payload);
+      recordDiff(agentId, payload, false);
       break;
 
     case "PostToolUseFailure":
@@ -387,6 +466,7 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "Stop": {
       State.updateTask(agentId, "finished");
+      lastPreDiffSig.delete(agentId);
       // Claude Code puts the turn's answer in the Stop payload itself, so there is
       // no transcript to read (the relay does not even forward its path). Other
       // agents report their last words the same way (Hermes, Codex) or as
@@ -436,6 +516,7 @@ function handleHook(island: Island, payload: HookPayload) {
       // Nothing left for the timer to do, and it must not outlive the session: a
       // pill recreated within 5.2 s would be removed by it.
       cancelStopTimer(agentId);
+      lastPreDiffSig.delete(agentId);
       State.clearSessionDiffs(agentId);
       if (isExternalAgent) {
         State.removeTask(agentId);
@@ -475,10 +556,7 @@ function handleHook(island: Island, payload: HookPayload) {
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};
-      // Claude Code asking a question is not a permission to grant: the island
-      // shows the options and sends back the one that was picked. Only Claude
-      // Code asks questions this way.
-      const questions = isExternalAgent ? null : askedQuestions(tool, input);
+      const questions = askedQuestions(tool, input);
       const view = questions ? "question" : "approval";
       // The card always comes up, even over another pill or an island that is
       // already open: its pill comes to the front, and the one you were on

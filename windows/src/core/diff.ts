@@ -1,14 +1,15 @@
 // Live diff — port of DiffEngine.swift (NotchBuddy/Sources/CoucouKit).
 //
 // Line diff (LCS) with 3-line context hunks, used for the Edit / MultiEdit /
-// Write tool calls the hooks see. Same size guards as macOS: beyond 200 KB or
-// 4 000 lines, or when the LCS table would pass a million cells, only the
-// +N −M counts are kept and the diff is marked `tooLarge`.
+// Write / Read tool calls the hooks see. Same size guards as macOS: beyond
+// 200 KB or 4 000 lines, or when the LCS table would pass a million cells, only
+// the +N −M counts are kept and the diff is marked `tooLarge`.
 //
 // Also home to `toOneLine` (Claude's final message → one line of plain text)
 // and the diff step encoding the ticker reads.
 
 export type DiffKind = "context" | "added" | "removed";
+export type DiffToolKind = "read" | "edit" | "write";
 
 export interface DiffLine {
   kind: DiffKind;
@@ -35,6 +36,8 @@ export interface FileDiff {
   tooLarge: boolean;
   /** True when produced by fromNew (Write tool). */
   isNewFile: boolean;
+  /** Whether this came from a Read, Edit, or Write tool call. */
+  toolKind?: DiffToolKind;
 }
 
 /** FileDiff.maxBytes / maxLines on macOS. */
@@ -56,7 +59,7 @@ export function fileName(path: string): string {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export function fromEdit(oldText: string, newText: string, path: string): FileDiff {
+export function fromEdit(oldText: string, newText: string, path: string, startLine = 1): FileDiff {
   if (utf8Length(oldText) + utf8Length(newText) > DIFF_MAX_BYTES) {
     return countFallback(oldText, newText, path);
   }
@@ -68,7 +71,8 @@ export function fromEdit(oldText: string, newText: string, path: string): FileDi
   if (oldLines.length * newLines.length > DIFF_MAX_CELLS) {
     return countFallback(oldText, newText, path);
   }
-  const flat = buildDiffLines(oldLines, newLines);
+  const baseLine = Math.max(1, Math.floor(startLine));
+  const flat = buildDiffLines(oldLines, newLines, baseLine);
   let added = 0;
   let removed = 0;
   for (const l of flat) {
@@ -76,52 +80,93 @@ export function fromEdit(oldText: string, newText: string, path: string): FileDi
     else if (l.kind === "removed") removed++;
   }
   return {
-    id: 0, path, added, removed, hunks: buildHunks(flat, CONTEXT), tooLarge: false, isNewFile: false,
+    id: 0,
+    path,
+    added,
+    removed,
+    hunks: buildHunks(flat, CONTEXT),
+    tooLarge: false,
+    isNewFile: false,
+    toolKind: "edit",
   };
 }
 
-export function fromNew(content: string, path: string): FileDiff {
+export function fromNew(content: string, path: string, startLine = 1): FileDiff {
   if (utf8Length(content) > DIFF_MAX_BYTES) {
     const lineCount = content.split("\n").length;
-    return { id: 0, path, added: lineCount, removed: 0, hunks: [], tooLarge: true, isNewFile: true };
+    return { id: 0, path, added: lineCount, removed: 0, hunks: [], tooLarge: true, isNewFile: true, toolKind: "write" };
   }
   const lines = splitLines(content);
   if (lines.length > DIFF_MAX_LINES) {
-    return { id: 0, path, added: lines.length, removed: 0, hunks: [], tooLarge: true, isNewFile: true };
+    return { id: 0, path, added: lines.length, removed: 0, hunks: [], tooLarge: true, isNewFile: true, toolKind: "write" };
   }
+  const baseLine = Math.max(1, Math.floor(startLine));
   const diffLines: DiffLine[] = lines.map((text, i) => ({
-    kind: "added", text, origLine: -1, newLine: i + 1,
+    kind: "added", text, origLine: -1, newLine: baseLine + i,
   }));
   return {
     id: 0,
     path,
     added: diffLines.length,
     removed: 0,
-    hunks: diffLines.length ? [{ origStart: 0, newStart: 1, lines: diffLines }] : [],
+    hunks: diffLines.length ? [{ origStart: 0, newStart: baseLine, lines: diffLines }] : [],
     tooLarge: false,
     isNewFile: true,
+    toolKind: "write",
+  };
+}
+
+export function fromRead(content: string, path: string, startLine = 1): FileDiff {
+  const lines = splitLines(content).slice(0, 40);
+  const baseLine = Math.max(1, Math.floor(startLine));
+  const diffLines: DiffLine[] = lines.map((text, i) => ({
+    kind: "context",
+    text,
+    origLine: baseLine + i,
+    newLine: baseLine + i,
+  }));
+  return {
+    id: 0,
+    path,
+    added: 0,
+    removed: 0,
+    hunks: diffLines.length ? [{ origStart: baseLine, newStart: baseLine, lines: diffLines }] : [],
+    tooLarge: false,
+    isNewFile: false,
+    toolKind: "read",
   };
 }
 
 /**
- * HookServer.buildFileDiff — the diff of one Edit, MultiEdit or Write tool call,
- * or null when the call changes nothing (or is not a file edit at all).
+ * HookServer.buildFileDiff — the diff or code preview of one Edit, MultiEdit,
+ * Write, or Read tool call across Claude Code, Antigravity, Codex, and Gemini CLI.
  */
 export function buildFileDiff(tool: string, input: Record<string, unknown>): FileDiff | null {
   const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
-  const path = str(input.file_path);
+  const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v >= 1 ? Math.floor(v) : 1);
+  const path = str(input.file_path) ?? str(input.TargetFile) ?? str(input.AbsolutePath) ?? str(input.path);
+  const startLine = num(input.start_line ?? input.StartLine ?? input.offset);
+
   switch (tool) {
-    case "Edit": {
-      const oldText = str(input.old_string);
-      const newText = str(input.new_string);
+    case "Edit":
+    case "replace_file_content":
+    case "edit_file":
+    case "replace": {
+      const oldText = str(input.old_string) ?? str(input.TargetContent);
+      const newText = str(input.new_string) ?? str(input.ReplacementContent);
       if (oldText == null || newText == null || path == null) return null;
       if (!oldText && !newText) return null;
-      const d = fromEdit(oldText, newText, path);
+      const d = fromEdit(oldText, newText, path, startLine);
       return d.added > 0 || d.removed > 0 ? d : null;
     }
-    case "MultiEdit": {
-      const edits = input.edits;
-      if (path == null || !Array.isArray(edits) || edits.length === 0) return null;
+    case "MultiEdit":
+    case "multi_replace_file_content": {
+      const edits = Array.isArray(input.edits)
+        ? input.edits
+        : Array.isArray(input.ReplacementChunks)
+          ? input.ReplacementChunks
+          : null;
+      if (path == null || !edits || edits.length === 0) return null;
       let added = 0;
       let removed = 0;
       let tooLarge = false;
@@ -129,27 +174,75 @@ export function buildFileDiff(tool: string, input: Record<string, unknown>): Fil
       for (const edit of edits) {
         if (!edit || typeof edit !== "object") continue;
         const e = edit as Record<string, unknown>;
-        const oldText = str(e.old_string);
-        const newText = str(e.new_string);
+        const oldText = str(e.old_string) ?? str(e.TargetContent);
+        const newText = str(e.new_string) ?? str(e.ReplacementContent);
+        const chunkStart = num(e.start_line ?? e.StartLine ?? startLine);
         if (oldText == null || newText == null) continue;
-        const d = fromEdit(oldText, newText, path);
+        const d = fromEdit(oldText, newText, path, chunkStart);
         added += d.added;
         removed += d.removed;
         hunks.push(...d.hunks);
         if (d.tooLarge) tooLarge = true;
       }
       if (added === 0 && removed === 0) return null;
-      return { id: 0, path, added, removed, hunks, tooLarge, isNewFile: false };
+      return { id: 0, path, added, removed, hunks, tooLarge, isNewFile: false, toolKind: "edit" };
     }
-    case "Write": {
-      const content = str(input.content);
+    case "Write":
+    case "write_to_file":
+    case "write_file": {
+      const content = str(input.content) ?? str(input.CodeContent);
       if (path == null || !content) return null;
-      const d = fromNew(content, path);
+      const d = fromNew(content, path, startLine);
       return d.added > 0 || d.removed > 0 ? d : null;
+    }
+    case "Read":
+    case "view_file":
+    case "read_file": {
+      const preview = str(input.code_preview) ?? str(input.content);
+      if (path == null || !preview) return null;
+      const d = fromRead(preview, path, startLine);
+      return d.hunks.length > 0 ? d : null;
     }
     default:
       return null;
   }
+}
+
+/**
+ * Extracts up to `maxLines` representative lines from a FileDiff for the
+ * compact 3-line live code preview box in the Overview card (Image 1).
+ */
+export function previewLinesOfDiff(diff: FileDiff, maxLines = 3): { lineNo: number; text: string; kind: DiffKind }[] {
+  const all = diff.hunks.flatMap((h) => h.lines);
+  if (all.length === 0) return [];
+  // Prefer added/changed lines if present; for context-only (Read), skip leading comment/blank lines.
+  const firstChangedIdx = all.findIndex((l) => l.kind === "added" || l.kind === "removed");
+  let startIdx = 0;
+  if (firstChangedIdx >= 0) {
+    startIdx = Math.max(0, firstChangedIdx - 1);
+  } else {
+    const firstCodeIdx = all.findIndex((l) => {
+      const t = l.text.trim();
+      return t.length > 0 && !t.startsWith("//") && !t.startsWith("/*") && !t.startsWith("*") && !t.startsWith("#");
+    });
+    if (firstCodeIdx >= 0) startIdx = firstCodeIdx;
+  }
+  const picked: { lineNo: number; text: string; kind: DiffKind }[] = [];
+  for (let i = startIdx; i < all.length && picked.length < maxLines; i++) {
+    const l = all[i];
+    if (l.kind === "removed" && all.some((x) => x.kind === "added")) continue;
+    if (firstChangedIdx < 0 && l.text.trim().length === 0) continue;
+    const lineNo = l.newLine > 0 ? l.newLine : l.origLine > 0 ? l.origLine : i + 1;
+    picked.push({ lineNo, text: l.text, kind: l.kind });
+  }
+  if (picked.length === 0) {
+    for (let i = 0; i < Math.min(maxLines, all.length); i++) {
+      const l = all[i];
+      const lineNo = l.origLine > 0 ? l.origLine : i + 1;
+      picked.push({ lineNo, text: l.text, kind: l.kind });
+    }
+  }
+  return picked;
 }
 
 // ── Line splitting ────────────────────────────────────────────────────────────
@@ -163,7 +256,7 @@ function splitLines(text: string): string[] {
 
 // ── LCS diff ──────────────────────────────────────────────────────────────────
 
-function buildDiffLines(oldLines: string[], newLines: string[]): DiffLine[] {
+function buildDiffLines(oldLines: string[], newLines: string[], baseLine = 1): DiffLine[] {
   const m = oldLines.length;
   const n = newLines.length;
   const w = n + 1;
@@ -195,15 +288,16 @@ function buildDiffLines(oldLines: string[], newLines: string[]): DiffLine[] {
   }
   matches.reverse();
 
+  const offset = baseLine - 1;
   const result: DiffLine[] = [];
   let prevOld = -1;
   let prevNew = -1;
-  const removedLine = (k: number): DiffLine => ({ kind: "removed", text: oldLines[k], origLine: k + 1, newLine: -1 });
-  const addedLine = (k: number): DiffLine => ({ kind: "added", text: newLines[k], origLine: -1, newLine: k + 1 });
+  const removedLine = (k: number): DiffLine => ({ kind: "removed", text: oldLines[k], origLine: offset + k + 1, newLine: -1 });
+  const addedLine = (k: number): DiffLine => ({ kind: "added", text: newLines[k], origLine: -1, newLine: offset + k + 1 });
   for (const [oi, ni] of matches) {
     for (let k = prevOld + 1; k < oi; k++) result.push(removedLine(k));
     for (let k = prevNew + 1; k < ni; k++) result.push(addedLine(k));
-    result.push({ kind: "context", text: oldLines[oi], origLine: oi + 1, newLine: ni + 1 });
+    result.push({ kind: "context", text: oldLines[oi], origLine: offset + oi + 1, newLine: offset + ni + 1 });
     prevOld = oi;
     prevNew = ni;
   }
@@ -243,7 +337,7 @@ function countFallback(oldText: string, newText: string, path: string): FileDiff
   const newSet = new Set(newLines);
   const added = newLines.filter((l) => l !== "" && !oldSet.has(l)).length;
   const removed = oldLines.filter((l) => l !== "" && !newSet.has(l)).length;
-  return { id: 0, path, added, removed, hunks: [], tooLarge: true, isNewFile: false };
+  return { id: 0, path, added, removed, hunks: [], tooLarge: true, isNewFile: false, toolKind: "edit" };
 }
 
 // ── toOneLine ─────────────────────────────────────────────────────────────────

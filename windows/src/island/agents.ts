@@ -10,6 +10,7 @@ export interface KnownAgent {
 export const KNOWN_AGENTS: Record<string, KnownAgent> = {
   cursor: { name: "Cursor", color: "#C0C4CC" },
   antigravity: { name: "Antigravity", color: "#E879F9" },
+  "antigravity-vscode": { name: "Anti - VS Code", color: "#A78BFA" },
   codex: { name: "Codex", color: "#2DD4BF" },
   gemini: { name: "Gemini CLI", color: "#8AB4F8" },
   copilot: { name: "Copilot CLI", color: "#818CF8" },

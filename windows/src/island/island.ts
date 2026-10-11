@@ -20,7 +20,7 @@ import { SeasonCache, parseOutfit } from "../mochi/wardrobe";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { closePlanCard, openPlanColor, planCardOpen } from "../views/usage";
-import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
+import { buildHeader, buildViews, hasSessionTicker, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
 import { refreshHookPills } from "./integrations";
@@ -186,6 +186,7 @@ export class Island {
           integration_stripe: "https://dashboard.stripe.com/payments",
           integration_notion: "https://notion.so",
           integration_calcom: "https://app.cal.com/bookings",
+          integration_paypal: "https://www.paypal.com/mep/dashboard",
         };
         if (task.id === CLAUDE_DESKTOP_ID) void Bridge.openClaudeDesktop();
         else if (task.id === "integration_claude" || task.sessionId) {
@@ -216,7 +217,11 @@ export class Island {
         const req = State.pendingApproval;
         if (!req) return;
         Sound.play("blip");
-        void Bridge.approvalDecline(req.requestId);
+        if (req.requestId) {
+          void Bridge.approvalDecline(req.requestId);
+        } else {
+          void Bridge.openSession(State.focusTask?.sessionId ?? null, State.focusTask?.sessionCwd ?? null);
+        }
         this.closeApproval();
       },
       toggleSound: () => {
@@ -310,6 +315,7 @@ export class Island {
   private wireFsm() {
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     this.fsm.openOnHover = State.settings.openOnHover;
+    this.fsm.alwaysCompact = State.settings.alwaysCompact;
     this.fsm.onTransition = (from, to) => {
       // The greeting is over, however it ended: back to his desktop spot.
       if (from === "coucou" && to !== "coucou") this.desktop.launch();
@@ -647,6 +653,16 @@ export class Island {
     let { w, h } = islandSize(State.mode, State.view, State.chatHistory.length);
     if (State.mode === "expanded" && State.view === "question" && State.pendingApproval?.questions) {
       h = QUESTION_PICKER_H;
+    } else if (State.mode === "expanded" && State.view === "overview") {
+      if (State.activeDiffId != null) {
+        h = 264;
+      } else {
+        const task = State.focusTask;
+        const diffs = task ? State.sessionDiffs.get(task.id) : undefined;
+        if (task && diffs && diffs.length > 0 && hasSessionTicker(task)) {
+          h = 168;
+        }
+      }
     }
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
@@ -702,6 +718,13 @@ export class Island {
     if (this.collapseTimer != null) {
       window.clearTimeout(this.collapseTimer);
       this.collapseTimer = null;
+    }
+    if (State.settings.alwaysCompact) {
+      if (this.collapsed) {
+        this.collapsed = false;
+        void Bridge.setCollapsed(false);
+      }
+      return;
     }
     if (State.mode === "hidden") {
       // Let the island finish retracting, then drop the window to the wake strip:
@@ -1013,7 +1036,18 @@ export class Island {
   };
 
   private updateBotTargets() {
-    const p = botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
+    const task = State.focusTask;
+    const diffs = task ? State.sessionDiffs.get(task.id) : undefined;
+    const hasInlinePreview =
+      State.mode === "expanded" &&
+      State.view === "overview" &&
+      State.activeDiffId == null &&
+      Boolean(task && diffs && diffs.length > 0 && hasSessionTicker(task));
+    const p = State.mode === "expanded" && State.view === "overview" && State.activeDiffId != null
+      ? { cx: 48, cy: 66, diameter: 38, opacity: 1 }
+      : hasInlinePreview
+        ? { cx: 52, cy: 96, diameter: 42, opacity: 1 }
+        : botPosition(State.mode, State.view, this.height.value, State.uploadProgress);
     this.botCx.target = p.cx;
     this.botCy.target = p.cy;
     this.botSize.target = p.diameter / 0.6;
@@ -1159,6 +1193,13 @@ export class Island {
       if (on) view.sync();
     }
 
+    if (expanded) {
+      const t = this.targetSize();
+      if (Math.abs(t.h - this.height.target) > 0.5) {
+        this.animateGeometry(t.h < this.height.target);
+      }
+    }
+
     // The chat is the only view with a text field, so it is the only time the
     // island is allowed to take keyboard focus.
     if (this.lastSyncedView !== State.view) {
@@ -1198,6 +1239,8 @@ export class Island {
     Sound.setVolume(State.settings.soundVolume);
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     this.fsm.openOnHover = State.settings.openOnHover;
+    this.fsm.alwaysCompact = State.settings.alwaysCompact;
+    if (State.settings.alwaysCompact && State.mode === "hidden") this.fsm.forcePetit();
     State.notify();
   }
 

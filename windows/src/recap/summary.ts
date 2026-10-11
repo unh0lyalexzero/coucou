@@ -102,6 +102,7 @@ const AGENT_NAMES: Record<string, string> = {
   integration_claude: "Claude Code",
   agent_cursor: "Cursor",
   agent_antigravity: "Antigravity",
+  "agent_antigravity-vscode": "Anti - VS Code",
   agent_codex: "Codex",
   agent_gemini: "Gemini CLI",
   agent_copilot: "Copilot CLI",

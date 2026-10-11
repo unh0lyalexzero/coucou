@@ -612,6 +612,7 @@ dependencies = [
 name = "coucou"
 version = "0.3.0"
 dependencies = [
+ "chrono",
  "dbus",
  "gtk",
  "keyring",
@@ -4341,6 +4342,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "windows-sys 0.61.2",
 ]

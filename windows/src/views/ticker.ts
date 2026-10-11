@@ -78,7 +78,8 @@ function setText(row: Row, text: string) {
   row.text = text;
   const diff = parseDiffStep(text);
   row.diff = diff;
-  const shown = diff ? diff.filename : text;
+  const isRead = diff != null && diff.added === 0 && diff.removed === 0;
+  const shown = diff ? `${isRead ? "📄 Read · " : "✏️ Edit · "}${diff.filename}` : text;
   row.shimmer.textContent = shown;
   row.dim.textContent = shown;
   if (diff) {
@@ -164,7 +165,7 @@ export class Ticker {
     // good at the twentieth step of a session.
     const newest = steps.length === 0 ? -1 : (task?.stepSeq ?? steps.length - 1);
 
-    const still = !!task?.finalLine;
+    const still = !!task?.finalLine || task?.state === "idle" || task?.state === "finished";
     if (still !== this.still) {
       this.still = still;
       // Mid-slide, the next frame places every row with the new look anyway.

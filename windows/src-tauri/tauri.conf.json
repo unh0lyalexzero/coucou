@@ -48,7 +48,10 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
-    "resources": { "../target/release/coucou-hook.exe": "coucou-hook.exe" },
+    "resources": {
+      "../target/release/coucou-hook.exe": "coucou-hook.exe",
+      "../target/release/coucou-antigravity-hook.exe": "coucou-antigravity-hook.exe"
+    },
     "copyright": "© Louis Raille",
     "category": "DeveloperTool",
     "shortDescription": "Mochi lives at the top of your screen",

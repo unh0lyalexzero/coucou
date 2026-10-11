@@ -18,6 +18,7 @@ test("the catalog holds the Mac's pills, in the Mac's order, with the Mac's valu
     ["integration_claude", "VS Code", "#F5F6F8", "workspace", "Integration"],
     ["agent_cursor", "Cursor", "#C0C4CC", "workspace", "Integration"],
     ["agent_antigravity", "Antigravity", "#E879F9", "workspace", "Integration"],
+    ["agent_antigravity-vscode", "Anti - VS Code", "#A78BFA", "workspace", "Integration"],
     ["agent_codex", "Codex", "#2DD4BF", "workspace", "Integration"],
     ["agent_gemini", "Gemini CLI", "#8AB4F8", "agent", "Agent"],
     ["agent_copilot", "Copilot CLI", "#818CF8", "agent", "Agent"],
@@ -38,6 +39,8 @@ test("the catalog holds the Mac's pills, in the Mac's order, with the Mac's valu
     ["integration_notion", "Notion", "#8C8C8C", "service", "Integration"],
     ["integration_calcom", "Cal.com", "#C9956A", "service", "Integration"],
     ["integration_stripe", "Stripe", "#0570DE", "service", "Integration"],
+    ["integration_paypal", "PayPal", "#009CDE", "service", "Integration"],
+    ["integration_vps", "VPS", "#38BDF8", "service", "Integration"],
     ["integration_music", "Apple Music", "#FA2D48", "service", "Integration"],
     ["integration_spotify", "Spotify", "#1DB954", "service", "Integration"],
   ];
@@ -60,6 +63,8 @@ test("the pills Windows always had keep their IDs, names, colours and sources", 
     ["integration_notion", "Notion", "#8C8C8C", "n8n"],
     ["integration_calcom", "Cal.com", "#C9956A", "n8n"],
     ["integration_stripe", "Stripe", "#0570DE", "n8n"],
+    ["integration_paypal", "PayPal", "#009CDE", "n8n"],
+    ["integration_vps", "VPS", "#38BDF8", "n8n"],
   ];
   for (const [id, name, color, source] of shipped) {
     const def = pillDefinition(id);
@@ -131,13 +136,13 @@ test("no chat provider that works here says Coming soon", () => {
 
 test("the main pill is a workspace tool that works here", () => {
   assert.deepEqual(mainPillChoices("linux").map((p) => p.id), [
-    "integration_claude", "agent_cursor", "agent_antigravity", "agent_codex",
+    "integration_claude", "agent_cursor", "agent_antigravity", "agent_antigravity-vscode", "agent_codex",
   ]);
   assert.equal(DEFAULT_MAIN_PILL, "integration_claude");
 });
 
 test("hook-driven pills are the workspace tools and the agents with hooks", () => {
-  for (const id of ["integration_claude", "agent_cursor", "agent_codex", "agent_gemini", "agent_copilot", "agent_muse", "agent_antigravity", "agent_opencode", "agent_amp", "agent_hermes"]) {
+  for (const id of ["integration_claude", "agent_cursor", "agent_codex", "agent_gemini", "agent_copilot", "agent_muse", "agent_antigravity", "agent_antigravity-vscode", "agent_opencode", "agent_amp", "agent_hermes"]) {
     assert.ok(isHookPill(id), id);
   }
   for (const id of ["agent_claude-desktop", "ai_anthropic", "integration_stripe", "agent_unknown"]) {
@@ -148,6 +153,7 @@ test("hook-driven pills are the workspace tools and the agents with hooks", () =
 test("a live session names its tool next to the project", () => {
   assert.equal(sessionSubtitle("integration_claude"), "Claude Code");
   assert.equal(sessionSubtitle("agent_cursor"), "Cursor");
+  assert.equal(sessionSubtitle("agent_antigravity-vscode"), "Anti - VS Code");
   assert.equal(sessionSubtitle("agent_claude-desktop"), "Claude Desktop");
   assert.equal(sessionSubtitle("agent_gemini"), "Agent");
   assert.equal(sessionSubtitle("agent_whatever"), "Agent");

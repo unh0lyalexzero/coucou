@@ -79,6 +79,8 @@ export const PILL_CATALOG: readonly PillDefinition[] = [
     subtitle: N_("Integration"), source: "agent", support: "yes", connect: hooks },
   { id: "agent_antigravity", name: "Antigravity", color: "#E879F9", category: "workspace",
     subtitle: N_("Integration"), source: "agent", support: "yes", connect: hooks },
+  { id: "agent_antigravity-vscode", name: "Anti - VS Code", color: "#A78BFA", category: "workspace",
+    subtitle: N_("Integration"), source: "agent", support: "yes", connect: hooks },
   { id: "agent_codex", name: "Codex", color: "#2DD4BF", category: "workspace",
     subtitle: N_("Integration"), source: "agent", support: "yes", connect: hooks },
   // ── Agents ─────────────────────────────────────────────────────────────────
@@ -128,6 +130,10 @@ export const PILL_CATALOG: readonly PillDefinition[] = [
     subtitle: N_("Integration"), source: "n8n", support: "yes", connect: key("calcom-api-key") },
   { id: "integration_stripe", name: "Stripe", color: "#0570DE", category: "service",
     subtitle: N_("Integration"), source: "n8n", support: "yes", connect: key("stripe-api-key") },
+  { id: "integration_paypal", name: "PayPal", color: "#009CDE", category: "service",
+    subtitle: N_("Integration"), source: "n8n", support: "yes", connect: key("paypal-client-id") },
+  { id: "integration_vps", name: "VPS", color: "#38BDF8", category: "service",
+    subtitle: N_("Integration"), source: "n8n", support: "yes", connect: none },
   { id: "integration_music", name: "Apple Music", color: "#FA2D48", category: "service",
     subtitle: N_("Integration"), source: "n8n", support: "no", connect: none },
   // Spotify's MPRIS interface on the session bus (src-tauri/src/spotify.rs).
@@ -178,6 +184,8 @@ export function sessionSubtitle(id: string): string {
   switch (id) {
     case "integration_claude": return "Claude Code";
     case "agent_cursor": return "Cursor";
+    case "agent_antigravity": return "Antigravity";
+    case "agent_antigravity-vscode": return "Anti - VS Code";
     case "agent_codex": return "Codex";
     case "agent_hermes": return "Hermes";
     case "agent_claude-desktop": return "Claude Desktop";

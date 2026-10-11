@@ -17,6 +17,8 @@ pub const KNOWN_KEYS: &[&str] = &[
     "vercel-token",
     "github-token",
     "stripe-api-key",
+    "paypal-client-id",
+    "paypal-client-secret",
     "resend-api-key",
     "notion-api-key",
     "calcom-api-key",

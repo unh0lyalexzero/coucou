@@ -1,9 +1,9 @@
 //! Every agent's hook payload, mapped onto the events and fields the island
 //! knows (Claude Code's). Same table as `normalize_event` /
 //! `normalize_tool_fields` in the Mac relay (HookServer.swift), plus Cursor's
-//! events.
+//! events and Antigravity / Codex tool input normalization.
 
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 /// The canonical name of an agent's event. Unknown names pass through.
 pub fn event(name: &str) -> &str {
@@ -43,18 +43,104 @@ pub fn event(name: &str) -> &str {
     }
 }
 
-/// Keys of Antigravity's `toolCall.args` the island reads under another name.
+/// Keys of Antigravity's `toolCall.args` (and other agents' tool inputs) that
+/// the island reads under Claude Code's canonical names.
 const ARG_ALIASES: &[(&str, &str)] = &[
     ("CommandLine", "command"),
     ("FilePath", "file_path"),
+    ("TargetFile", "file_path"),
+    ("AbsolutePath", "file_path"),
     ("Path", "path"),
+    ("DirectoryPath", "path"),
+    ("SearchPath", "path"),
     ("Url", "url"),
     ("Query", "query"),
     ("Pattern", "pattern"),
+    ("TargetContent", "old_string"),
+    ("ReplacementContent", "new_string"),
+    ("CodeContent", "content"),
+    ("StartLine", "start_line"),
+    ("EndLine", "end_line"),
 ];
 
 fn non_empty_str<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
     map.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
+}
+
+/// Normalizes a `tool_input` map in place without overwriting existing canonical keys.
+fn normalize_tool_input(input: &mut Map<String, Value>) {
+    for (from, to) in ARG_ALIASES {
+        if !input.contains_key(*to) {
+            if let Some(v) = input.get(*from).cloned() {
+                input.insert((*to).to_string(), v);
+            }
+        }
+    }
+
+    // If `command` is an array (e.g. Codex `["powershell", "-Command", "..."]`) or absent
+    // while `cmd` / `argv` is present, normalize into a single string `command`.
+    if !input.get("command").is_some_and(Value::is_string) {
+        let joined = ["command", "cmd", "argv"].iter().find_map(|k| match input.get(*k) {
+            Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+            Some(Value::Array(arr)) => {
+                let parts: Vec<&str> = arr.iter().filter_map(Value::as_str).collect();
+                (!parts.is_empty()).then(|| parts.join(" "))
+            }
+            _ => None,
+        });
+        if let Some(cmd) = joined {
+            input.insert("command".into(), Value::String(cmd));
+        }
+    }
+
+    // Map Antigravity's `ReplacementChunks` (multi_replace_file_content) into `edits`.
+    if !input.contains_key("edits") {
+        if let Some(Value::Array(chunks)) = input.get("ReplacementChunks") {
+            let edits: Vec<Value> = chunks
+                .iter()
+                .filter_map(Value::as_object)
+                .map(|c| {
+                    let mut edit = Map::new();
+                    if let Some(old) = c.get("TargetContent").or_else(|| c.get("old_string")) {
+                        edit.insert("old_string".into(), old.clone());
+                    }
+                    if let Some(new) = c.get("ReplacementContent").or_else(|| c.get("new_string")) {
+                        edit.insert("new_string".into(), new.clone());
+                    }
+                    if let Some(start) = c.get("StartLine").or_else(|| c.get("start_line")) {
+                        edit.insert("start_line".into(), start.clone());
+                    }
+                    if let Some(end) = c.get("EndLine").or_else(|| c.get("end_line")) {
+                        edit.insert("end_line".into(), end.clone());
+                    }
+                    Value::Object(edit)
+                })
+                .collect();
+            if !edits.is_empty() {
+                input.insert("edits".into(), Value::Array(edits));
+            }
+        }
+    }
+
+    // Normalize Antigravity's `ask_question` items (`options: ["A", "B"]`, `is_multi_select`)
+    // into Claude Code's `AskUserQuestion` shape (`options: [{"label": "A"}]`, `multiSelect`).
+    if let Some(Value::Array(questions)) = input.get_mut("questions") {
+        for q in questions.iter_mut() {
+            let Some(q_obj) = q.as_object_mut() else { continue };
+            if !q_obj.contains_key("multiSelect") {
+                if let Some(Value::Bool(multi)) = q_obj.get("is_multi_select") {
+                    q_obj.insert("multiSelect".into(), Value::Bool(*multi));
+                }
+            }
+            if let Some(Value::Array(opts)) = q_obj.get_mut("options") {
+                for opt in opts.iter_mut() {
+                    if let Value::String(label) = opt {
+                        *opt = json!({ "label": label.clone() });
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Fills `tool_name`, `tool_input`, `session_id` and `cwd` from wherever the
@@ -83,18 +169,13 @@ pub fn fields(map: &mut Map<String, Value>, env: &dyn Fn(&str) -> Option<String>
                 .and_then(|v| v.as_object().cloned()),
             _ => None,
         };
-        let input = args.or_else(|| {
-            let mut flat = tool_call.as_ref()?.get("args")?.as_object()?.clone();
-            for (from, to) in ARG_ALIASES {
-                if let Some(v) = flat.get(*from).cloned() {
-                    flat.insert((*to).to_string(), v);
-                }
-            }
-            Some(flat)
-        });
-        if let Some(input) = input {
+        let input = args.or_else(|| tool_call.as_ref()?.get("args")?.as_object().cloned());
+        if let Some(mut input) = input {
+            normalize_tool_input(&mut input);
             map.insert("tool_input".into(), Value::Object(input));
         }
+    } else if let Some(Value::Object(input)) = map.get_mut("tool_input") {
+        normalize_tool_input(input);
     }
 
     if non_empty_str(map, "session_id").is_none() {
@@ -196,6 +277,43 @@ mod tests {
         assert_eq!(m["tool_input"]["CommandLine"], "cargo check");
         assert_eq!(m["session_id"], "conv-1");
         assert_eq!(m["cwd"], "C:\\Projects\\test");
+    }
+
+    #[test]
+    fn antigravity_edit_and_question_args_are_normalized() {
+        let mut m = obj(json!({
+            "toolCall": {
+                "name": "replace_file_content",
+                "args": {
+                    "TargetFile": "C:\\repo\\src\\main.ts",
+                    "TargetContent": "const a = 1;",
+                    "ReplacementContent": "const a = 2;",
+                    "StartLine": 12,
+                    "EndLine": 12
+                }
+            }
+        }));
+        fields(&mut m, &no_env);
+        assert_eq!(m["tool_input"]["file_path"], "C:\\repo\\src\\main.ts");
+        assert_eq!(m["tool_input"]["old_string"], "const a = 1;");
+        assert_eq!(m["tool_input"]["new_string"], "const a = 2;");
+        assert_eq!(m["tool_input"]["start_line"], 12);
+
+        let mut q = obj(json!({
+            "toolCall": {
+                "name": "ask_question",
+                "args": {
+                    "questions": [{
+                        "question": "Proceed with deploy?",
+                        "options": ["Yes", "No"],
+                        "is_multi_select": false
+                    }]
+                }
+            }
+        }));
+        fields(&mut q, &no_env);
+        assert_eq!(q["tool_input"]["questions"][0]["options"][0]["label"], "Yes");
+        assert_eq!(q["tool_input"]["questions"][0]["multiSelect"], false);
     }
 
     #[test]
