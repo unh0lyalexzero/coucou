@@ -283,6 +283,10 @@ pub fn find_on_path(stem: &str) -> Option<PathBuf> {
 // Finding and raising a session's window lives in linux_focus.rs. There is no
 // Claude desktop app for Linux.
 
+pub fn is_app_running(_exe: &str) -> bool {
+    false
+}
+
 pub fn open_claude_desktop() -> bool {
     false
 }

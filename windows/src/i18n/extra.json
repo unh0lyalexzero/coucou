@@ -3536,6 +3536,72 @@
    "pt-BR": "Só um arquivo solto na ilha pode ser enviado com uma pergunta.",
    "ru": "С вопросом можно отправить только файл, перетащенный на остров.",
    "id": "Hanya file yang dijatuhkan ke pulau yang bisa dikirim bersama pertanyaan."
+  },
+  "App closed": {
+   "zh-Hans": "应用已关闭",
+   "hi": "ऐप बंद है",
+   "es": "App cerrada",
+   "ar": "التطبيق مغلق",
+   "fr": "Application fermée",
+   "bn": "অ্যাপ বন্ধ",
+   "pt-BR": "Aplicativo fechado",
+   "ru": "Приложение закрыто",
+   "id": "Aplikasi ditutup"
+  },
+  "Waiting for input": {
+   "zh-Hans": "等待输入",
+   "hi": "प्रतिक्रिया की प्रतीक्षा है",
+   "es": "Esperando respuesta",
+   "ar": "في انتظار الرد",
+   "fr": "En attente de réponse",
+   "bn": "ইনপুটের জন্য অপেক্ষা করছে",
+   "pt-BR": "Aguardando resposta",
+   "ru": "Ожидание ответа",
+   "id": "Menunggu respons"
+  },
+  "Plan usage": {
+   "zh-Hans": "套餐用量",
+   "hi": "प्लान उपयोग",
+   "es": "Uso del plan",
+   "ar": "استخدام الخطة",
+   "fr": "Utilisation du forfait",
+   "bn": "প্ল্যান ব্যবহার",
+   "pt-BR": "Uso do plano",
+   "ru": "Использование плана",
+   "id": "Penggunaan paket"
+  },
+  "Active session": {
+   "zh-Hans": "活跃会话",
+   "hi": "सक्रिय सत्र",
+   "es": "Sesión activa",
+   "ar": "جلسة نشطة",
+   "fr": "Session active",
+   "bn": "সক্রিয় সেশন",
+   "pt-BR": "Sessão ativa",
+   "ru": "Активная сессия",
+   "id": "Sesi aktif"
+  },
+  "Running": {
+   "zh-Hans": "运行中",
+   "hi": "चल रहा है",
+   "es": "En ejecución",
+   "ar": "قيد التشغيل",
+   "fr": "En cours",
+   "bn": "চলছে",
+   "pt-BR": "Em execução",
+   "ru": "Выполняется",
+   "id": "Berjalan"
+  },
+  "Install hooks": {
+   "zh-Hans": "安装钩子",
+   "hi": "हुक स्थापित करें",
+   "es": "Instalar hooks",
+   "ar": "تثبيت الخطافات",
+   "fr": "Installer les hooks",
+   "bn": "হুক ইনস্টল করুন",
+   "pt-BR": "Instalar hooks",
+   "ru": "Установить хуки",
+   "id": "Pasang hook"
   }
  }
 }

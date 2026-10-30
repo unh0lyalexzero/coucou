@@ -1416,6 +1416,8 @@ async function render() {
   // A main pill this build can run, and no pill declared twice.
   settings = { ...settings, ...sanitizeDeclared(settings) };
   const connected: Record<string, boolean> = { ...((await Bridge.agentHooksStatus()) ?? {}) };
+  connected["integration_claude"] = status.installed;
+  connected["agent_claude-desktop"] = status.installed;
   for (const def of availablePills()) {
     if (def.connect.kind === "key") {
       connected[def.id] = present[def.connect.key] ?? (await Bridge.secretPresent(def.connect.key)) ?? false;

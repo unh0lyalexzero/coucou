@@ -500,11 +500,24 @@ fn focus_app(exe: &str) -> bool {
         .is_some_and(|(hwnd, _, _)| bring_forward(hwnd))
 }
 
+pub fn is_app_running(exe: &str) -> bool {
+    process_table()
+        .into_iter()
+        .any(|(_, p)| p.exe.eq_ignore_ascii_case(exe))
+}
+
 /// The Claude desktop app: brought forward when it runs (Claude Code's own
 /// `claude.exe` has no window of its own, so it is never the one picked),
 /// started from where its installer puts it otherwise.
 pub fn open_claude_desktop() -> bool {
     if focus_app("claude.exe") {
+        return true;
+    }
+    // Launch/focus via Windows Package AUMID
+    let _ = Command::new("explorer.exe")
+        .arg("shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude")
+        .spawn();
+    if is_app_running("claude.exe") {
         return true;
     }
     let Some(base) = std::env::var_os("LOCALAPPDATA") else {

@@ -960,6 +960,134 @@ function n8nDetail(task: AgentTask, onBack: () => void): HTMLElement {
   );
 }
 
+// ── Claude Desktop ────────────────────────────────────────────────────────────
+
+function claudeDesktopCard(openSettings?: () => void): HTMLElement {
+  const d = get("agent_claude-desktop");
+  const running = d.running === true;
+  const waitingInput = d.isWaitingInput === true;
+  const title = typeof d.title === "string" && d.title ? d.title : null;
+  const cwd = typeof d.cwd === "string" && d.cwd ? d.cwd : null;
+  const model = typeof d.model === "string" && d.model ? d.model : null;
+  const effort = typeof d.effort === "string" && d.effort ? d.effort : null;
+  const lastActivityAt = typeof d.lastActivityAt === "number" ? d.lastActivityAt : null;
+  const plan5h = typeof d.plan5h === "number" ? d.plan5h : null;
+  const plan7d = typeof d.plan7d === "number" ? d.plan7d : null;
+  const hooksInstalled = d.hooksInstalled === true || State.settings.hooksInstalled;
+
+  const refreshBtn = h(
+    "button",
+    {
+      class: "int-more",
+      title: t("Refresh"),
+      onclick: () => void Bridge.refreshIntegration("agent_claude-desktop"),
+    },
+    svg(ICONS.arrowClockwise, 8, { stroke: 2.2 }),
+  );
+
+  const statusColor = !running ? "#6B7079" : waitingInput ? "#F5A524" : "#22C55E";
+  const statusText = !running
+    ? t("App closed")
+    : waitingInput
+      ? t("Waiting for input")
+      : model
+        ? `${model}${effort ? ` · ${effort}` : ""}`
+        : t("Running");
+
+  const rows = h("div", { class: "int-rows tight" });
+
+  // Status & Model Row
+  rows.append(
+    h(
+      "div",
+      { class: "int-row" },
+      dot(statusColor, 5),
+      h("span", { class: "int-name", text: statusText }),
+      lastActivityAt ? h("span", { class: "int-ago", text: timeAgo(lastActivityAt) }) : h("span"),
+    ),
+  );
+
+  // Active Project / CWD Row
+  if (title || cwd) {
+    const rawName = title || (cwd ? cwd.replace(/\\/g, "/").split("/").filter(Boolean).pop() : null) || t("Active session");
+    const sub = cwd ?? "";
+    rows.append(
+      h(
+        "div",
+        {
+          class: "int-row first",
+          style: "cursor:pointer;background:#D9775714",
+          title: cwd ?? title ?? "",
+          onclick: () => void Bridge.openClaudeDesktop(),
+        },
+        dot("#D97757", 5),
+        h("span", { class: "int-name", style: "font-weight:600", text: rawName }),
+        sub ? h("span", { class: "int-ago", style: "max-width:90px;overflow:hidden;text-overflow:ellipsis", text: sub }) : h("span"),
+      ),
+    );
+  }
+
+  // Plan Usage Limits
+  if (plan5h != null || plan7d != null) {
+    const statCells: Node[] = [];
+    if (plan5h != null) {
+      statCells.push(
+        h("span", {
+          style: `font-size:10px;font-family:var(--mono);color:${plan5h > 80 ? "#F4505E" : plan5h > 50 ? "#F5A524" : "var(--dim-3)"}`,
+          text: `5h: ${plan5h.toFixed(0)}%`,
+        }),
+      );
+    }
+    if (plan7d != null) {
+      statCells.push(
+        h("span", {
+          style: `font-size:10px;font-family:var(--mono);color:${plan7d > 80 ? "#F4505E" : plan7d > 50 ? "#F5A524" : "var(--dim-3)"}`,
+          text: `7d: ${plan7d.toFixed(0)}%`,
+        }),
+      );
+    }
+    rows.append(
+      h(
+        "div",
+        { class: "int-row" },
+        dot("#6B7079", 4),
+        h("span", { class: "int-name", text: t("Plan usage") }),
+        h("div", { style: "display:flex;gap:6px;align-items:center" }, ...statCells),
+      ),
+    );
+  }
+
+  // Action buttons
+  const actions = h("div", { class: "int-actions", style: "margin-top:6px" });
+  actions.append(
+    h("button", {
+      class: "link-btn",
+      style: "color:#D97757",
+      text: t("Open Claude"),
+      onclick: () => void Bridge.openClaudeDesktop(),
+    }),
+  );
+
+  if (!hooksInstalled && openSettings) {
+    actions.append(
+      h("button", {
+        class: "link-btn",
+        style: "color:#8e939c",
+        text: t("Install hooks"),
+        onclick: openSettings,
+      }),
+    );
+  }
+
+  return h(
+    "div",
+    { class: "int-card" },
+    header("#D97757", "Claude Desktop", t("Agent"), refreshBtn),
+    rows,
+    actions,
+  );
+}
+
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 
 export interface IntegrationCardHooks {
@@ -990,6 +1118,8 @@ export function hasIntegrationData(id: string): boolean {
       return arr(id, "pages").length > 0;
     case "integration_calcom":
       return info.loaded;
+    case "agent_claude-desktop":
+      return true;
     default:
       return false;
   }
@@ -1020,6 +1150,8 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
   }
 
   switch (task.id) {
+    case "agent_claude-desktop":
+      return claudeDesktopCard(hooks.openSettings);
     case "integration_resend":
       return resendCard();
     case "integration_github":
@@ -1038,3 +1170,4 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
 }
 
 export { clear };
+

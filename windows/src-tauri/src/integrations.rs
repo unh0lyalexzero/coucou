@@ -63,6 +63,7 @@ pub fn set_paused(on: bool) {
 
 /// Spawns every poller with the macOS delays and intervals.
 pub fn start(app: AppHandle) {
+    spawn(app.clone(), "agent_claude-desktop", 1, 15, poll_claude_desktop);
     spawn(app.clone(), "integration_vps", 2, 15, crate::vps::ensure_connected);
     spawn(app.clone(), "integration_n8n", 3, 15, poll_n8n);
     spawn(app.clone(), "integration_vercel", 5, 30, poll_vercel);
@@ -110,6 +111,7 @@ where
 /// One-shot refresh from the Refresh buttons in the island.
 pub async fn poll_once(app: AppHandle, id: &str) {
     match id {
+        "agent_claude-desktop" => poll_claude_desktop(app).await,
         "integration_vps" => crate::vps::ensure_connected(app).await,
         "integration_stripe" => poll_stripe(app).await,
         "integration_paypal" => poll_paypal(app).await,
@@ -1294,6 +1296,139 @@ fn fmt_value(v: &Value) -> String {
         Value::Object(_) => "{…}".into(),
         other => other.to_string(),
     }
+}
+
+// ── Claude Desktop ────────────────────────────────────────────────────────────
+
+async fn poll_claude_desktop(app: AppHandle) {
+    let hooks_installed = crate::hooks::status().installed;
+    let running = crate::platform::is_app_running("claude.exe");
+
+    let mut title: Option<String> = None;
+    let mut cwd: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut effort: Option<String> = None;
+    let mut last_activity: Option<u64> = None;
+    let mut waiting_input = false;
+    let mut plan_5h: Option<u64> = None;
+    let mut plan_7d: Option<u64> = None;
+
+    let possible_dirs = [
+        std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .map(|p| p.join("Packages").join("Claude_pzs8sxrjxfjjc").join("LocalCache").join("Roaming").join("Claude")),
+        std::env::var_os("APPDATA")
+            .map(std::path::PathBuf::from)
+            .map(|p| p.join("Claude")),
+    ];
+
+    for dir_opt in possible_dirs.into_iter().flatten() {
+        if !dir_opt.is_dir() {
+            continue;
+        }
+
+        // 1. Plan limits
+        if plan_5h.is_none() {
+            let plan_path = dir_opt.join("plan-usage-history.json");
+            if let Ok(bytes) = std::fs::read(&plan_path) {
+                if let Ok(val) = serde_json::from_slice::<Value>(&bytes) {
+                    if let Some(samples) = val.get("samples").and_then(Value::as_array) {
+                        if let Some(last) = samples.last() {
+                            if let Some(u) = last.get("u") {
+                                plan_5h = u.get("fh").and_then(Value::as_u64);
+                                plan_7d = u.get("sd").and_then(Value::as_u64);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Active session
+        if title.is_none() {
+            let mut target_session_id: Option<String> = None;
+            let cfg_path = dir_opt.join("claude_desktop_config.json");
+            if let Ok(bytes) = std::fs::read(&cfg_path) {
+                if let Ok(val) = serde_json::from_slice::<Value>(&bytes) {
+                    if let Some(id) = val.pointer("/preferences/epitaxyPrefs/desktop-frame.paneStore.v1/state/lastPrimaryCodeSession/id").and_then(Value::as_str) {
+                        target_session_id = Some(id.to_string());
+                    }
+                }
+            }
+
+            let sessions_root = dir_opt.join("claude-code-sessions");
+            if sessions_root.is_dir() {
+                let mut found_file: Option<std::path::PathBuf> = None;
+                if let Ok(entries) = std::fs::read_dir(&sessions_root) {
+                    for acc in entries.filter_map(Result::ok) {
+                        if !acc.path().is_dir() { continue; }
+                        if let Ok(orgs) = std::fs::read_dir(acc.path()) {
+                            for org in orgs.filter_map(Result::ok) {
+                                if !org.path().is_dir() { continue; }
+                                if let Some(ref target) = target_session_id {
+                                    let specific = org.path().join(format!("{target}.json"));
+                                    if specific.is_file() {
+                                        let wait_dir = org.path().join("waiting-input");
+                                        waiting_input = wait_dir.is_dir();
+                                        found_file = Some(specific);
+                                        break;
+                                    }
+                                }
+                                if let Ok(files) = std::fs::read_dir(org.path()) {
+                                    for f in files.filter_map(Result::ok) {
+                                        let name = f.file_name().to_string_lossy().to_string();
+                                        if name.starts_with("local_") && name.ends_with(".json") {
+                                            let p = f.path();
+                                            let is_newer = found_file.as_ref().map(|cur| {
+                                                let t_cur = cur.metadata().and_then(|m| m.modified()).ok();
+                                                let t_new = p.metadata().and_then(|m| m.modified()).ok();
+                                                t_new > t_cur
+                                            }).unwrap_or(true);
+                                            if is_newer {
+                                                let wait_dir = org.path().join("waiting-input");
+                                                waiting_input = wait_dir.is_dir();
+                                                found_file = Some(p);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(file_path) = found_file {
+                    if let Ok(bytes) = std::fs::read(&file_path) {
+                        if let Ok(sess) = serde_json::from_slice::<Value>(&bytes) {
+                            title = sess.get("title").and_then(Value::as_str).map(str::to_string);
+                            cwd = sess.get("cwd").and_then(Value::as_str).map(str::to_string);
+                            model = sess.get("model").and_then(Value::as_str).map(str::to_string);
+                            effort = sess.get("effort").and_then(Value::as_str).map(str::to_string);
+                            last_activity = sess.get("lastActivityAt").and_then(Value::as_u64);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    emit(&app, IntegrationUpdate {
+        id: "agent_claude-desktop",
+        data: json!({
+            "running": running,
+            "title": title,
+            "cwd": cwd,
+            "model": model,
+            "effort": effort,
+            "lastActivityAt": last_activity,
+            "isWaitingInput": waiting_input,
+            "plan5h": plan_5h,
+            "plan7d": plan_7d,
+            "hooksInstalled": hooks_installed,
+        }),
+        error: None,
+        event: None,
+    });
 }
 
 #[cfg(test)]
